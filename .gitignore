@@ -216,3 +216,31 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+
+# Python
+__pycache__/
+*.pyc
+
+# Environment
+.env
+.venv/
+venv/
+
+# Logs
+logs/
+
+# Artifacts
+artifacts/
+
+# Temporary data
+data/raw/missing_dates.csv
+
+# Jupyter
+.ipynb_checkpoints/
+
+# OS
+.DS_Store
+Thumbs.db
+cred.txt
+.env

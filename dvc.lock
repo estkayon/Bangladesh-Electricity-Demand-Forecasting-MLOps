@@ -1,0 +1,50 @@
+schema: '2.0'
+stages:
+  preprocess:
+    cmd: python -m src.data.preprocess
+    deps:
+    - path: data/raw/area_wise_demand.csv
+      hash: md5
+      md5: 1f2c097f905418fa4f4d03d76ec893db
+      size: 587318
+    - path: src/data/preprocess.py
+      hash: md5
+      md5: 007266b2e9dd7612c5771a317968a65d
+      size: 3865
+    outs:
+    - path: data/processed/area_wise_demand_processed.csv
+      hash: md5
+      md5: 28b26c916a616f6703a7c22420643b58
+      size: 776693
+  build_target:
+    cmd: python -m src.features.build_target
+    deps:
+    - path: data/processed/area_wise_demand_processed.csv
+      hash: md5
+      md5: 28b26c916a616f6703a7c22420643b58
+      size: 776693
+    - path: src/features/build_target.py
+      hash: md5
+      md5: 02b5fa5b77935d99ed561bd60acca9b9
+      size: 3301
+    outs:
+    - path: data/processed/national_daily_demand.csv
+      hash: md5
+      md5: b8e4f249c7783dbc4efd1578beedaceb
+      size: 90533
+  build_features:
+    cmd: python -m src.features.build_features
+    deps:
+    - path: data/processed/national_daily_demand.csv
+      hash: md5
+      md5: b8e4f249c7783dbc4efd1578beedaceb
+      size: 90533
+    - path: src/features/build_features.py
+      hash: md5
+      md5: 761d811d064ee01c1a2083c71a4d276c
+      size: 5365
+    outs:
+    - path: data/processed/model_features.csv
+      hash: md5
+      md5: cfcacfeea0a67e7af9711025269e7a8b
+      size: 210814

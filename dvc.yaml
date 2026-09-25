@@ -1,0 +1,22 @@
+stages:
+  preprocess:
+    cmd: python -m src.data.preprocess
+    deps:
+    - data/raw/area_wise_demand.csv
+    - src/data/preprocess.py
+    outs:
+    - data/processed/area_wise_demand_processed.csv
+  build_target:
+    cmd: python -m src.features.build_target
+    deps:
+    - data/processed/area_wise_demand_processed.csv
+    - src/features/build_target.py
+    outs:
+    - data/processed/national_daily_demand.csv
+  build_features:
+    cmd: python -m src.features.build_features
+    deps:
+    - data/processed/national_daily_demand.csv
+    - src/features/build_features.py
+    outs:
+    - data/processed/model_features.csv
