@@ -345,7 +345,9 @@ def main():
 
         mlflow.sklearn.log_model(
             sk_model=model,
-            artifact_path="model",
+            name="model",
+            input_example=X_train.head(5),
+            registered_model_name="bangladesh-electricity-demand-ridge",
         )
 
     logger.info(
