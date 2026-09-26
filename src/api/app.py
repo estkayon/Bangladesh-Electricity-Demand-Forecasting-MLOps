@@ -1,10 +1,12 @@
 import os
+from datetime import date
 
 import mlflow
+import mlflow.sklearn
 import pandas as pd
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 
 from src.logger import get_logger
@@ -12,13 +14,79 @@ from src.logger import get_logger
 
 logger = get_logger("api")
 
-FEATURE_DATA_PATH = "data/processed/model_features.csv"
 
-MODEL_NAME = "bangladesh-electricity-demand-ridge"
+# ==================================================
+# Configuration
+# ==================================================
+
+NATIONAL_FEATURE_PATH = (
+    "data/processed/model_features.csv"
+)
+
+REGIONAL_FEATURE_PATH = (
+    "data/processed/regional_model_features.csv"
+)
+
+NATIONAL_MODEL_NAME = (
+    "bangladesh-electricity-demand-ridge"
+)
+
 MODEL_ALIAS = "champion"
-MODEL_URI = f"models:/{MODEL_NAME}@{MODEL_ALIAS}"
 
-FEATURE_COLUMNS = [
+
+REGIONS = [
+    "National",
+    "Barisal",
+    "Chittagong",
+    "Comilla",
+    "Dhaka",
+    "Khulna",
+    "Mymensingh",
+    "Rajshahi",
+    "Rangpur",
+    "Sylhet",
+]
+
+
+REGIONAL_MODEL_NAMES = {
+    "Chittagong":
+        "bangladesh-electricity-demand-chittagong-ridge",
+
+    "Comilla":
+        "bangladesh-electricity-demand-comilla-ridge",
+
+    "Dhaka":
+        "bangladesh-electricity-demand-dhaka-ridge",
+
+    "Khulna":
+        "bangladesh-electricity-demand-khulna-ridge",
+
+    "Mymensingh":
+        "bangladesh-electricity-demand-mymensingh-ridge",
+
+    "Rangpur":
+        "bangladesh-electricity-demand-rangpur-ridge",
+
+    "Sylhet":
+        "bangladesh-electricity-demand-sylhet-ridge",
+}
+
+
+# Regional deployment strategy selected from time-series CV
+REGIONAL_STRATEGIES = {
+    "Barisal": "baseline",
+    "Chittagong": "ridge",
+    "Comilla": "ridge",
+    "Dhaka": "ridge",
+    "Khulna": "ridge",
+    "Mymensingh": "ridge",
+    "Rajshahi": "baseline",
+    "Rangpur": "ridge",
+    "Sylhet": "ridge",
+}
+
+
+NATIONAL_FEATURE_COLUMNS = [
     "total_demand",
     "total_load_shed",
     "day_of_week",
@@ -42,31 +110,46 @@ FEATURE_COLUMNS = [
     "load_shed_lag_1_day",
 ]
 
-MODEL_INFO = {
-    "model_name": MODEL_NAME,
-    "model_type": "Ridge Regression",
-    "model_alias": MODEL_ALIAS,
-    "model_uri": MODEL_URI,
-    "alpha": 0.01,
-    "scaler": "StandardScaler",
-    "forecast_horizon": "Next-day",
-    "target": "National electricity demand",
-    "unit": "MW",
-    "feature_count": len(FEATURE_COLUMNS),
-    "cv_mean_mape": 4.8905,
-    "holdout_mape": 5.68,
-    "holdout_mae_mw": 743.59,
-    "holdout_rmse_mw": 1027.79,
-}
 
+REGIONAL_FEATURE_COLUMNS = [
+    "regional_demand_mw",
+    "regional_load_shed_mw",
+    "day_of_week",
+    "month",
+    "day_of_month",
+    "day_of_year",
+    "is_weekend",
+    "is_holiday",
+    "trend_days",
+    "temperature_max_c",
+    "temperature_min_c",
+    "temperature_mean_c",
+    "precipitation_mm",
+    "rain_mm",
+    "lag_1_day",
+    "lag_7_day",
+    "lag_14_day",
+    "rolling_7_day_mean",
+    "rolling_14_day_mean",
+    "rolling_30_day_mean",
+    "load_shed_lag_1_day",
+]
+
+
+# ==================================================
+# App
+# ==================================================
 
 app = FastAPI(
-    title="Bangladesh Electricity Demand Forecasting API",
-    description=(
-        "Production-oriented API for next-day national "
-        "electricity demand forecasting in Bangladesh."
+    title=(
+        "Bangladesh Electricity Demand "
+        "Forecasting API"
     ),
-    version="1.1.0",
+    description=(
+        "National and regional next-day "
+        "electricity demand forecasting API."
+    ),
+    version="2.0.0",
 )
 
 
@@ -79,14 +162,15 @@ app.add_middleware(
 )
 
 
-model = None
+# Model cache
+model_cache = {}
 
+
+# ==================================================
+# MLflow
+# ==================================================
 
 def setup_mlflow():
-    logger.info(
-        "Loading MLflow configuration"
-    )
-
     load_dotenv()
 
     tracking_uri = os.getenv(
@@ -107,123 +191,459 @@ def setup_mlflow():
     )
 
 
-def load_registered_model():
-    global model
+def load_registered_model(
+    model_name
+):
+    if model_name in model_cache:
+        return model_cache[
+            model_name
+        ]
 
-    setup_mlflow()
+    model_uri = (
+        f"models:/{model_name}"
+        f"@{MODEL_ALIAS}"
+    )
 
     logger.info(
-        f"Loading registered model: {MODEL_URI}"
+        f"Loading model: {model_uri}"
     )
 
     model = mlflow.sklearn.load_model(
-        MODEL_URI
+        model_uri
     )
+
+    model_cache[
+        model_name
+    ] = model
 
     logger.info(
-        "Registered champion model loaded successfully"
+        f"Model loaded successfully: "
+        f"{model_name}"
     )
 
+    return model
 
-def load_feature_data():
-    logger.info(
-        "Loading feature dataset"
-    )
 
+# ==================================================
+# Data Loading
+# ==================================================
+
+def load_national_data():
     df = pd.read_csv(
-        FEATURE_DATA_PATH
+        NATIONAL_FEATURE_PATH
     )
 
     df["Date"] = pd.to_datetime(
         df["Date"]
     )
 
-    df["forecast_date"] = pd.to_datetime(
-        df["forecast_date"]
+    df["forecast_date"] = (
+        pd.to_datetime(
+            df["forecast_date"]
+        )
     )
 
-    df = (
-        df.sort_values("Date")
+    return (
+        df
+        .sort_values("Date")
         .reset_index(drop=True)
     )
 
-    return df
 
-
-def prepare_latest_features():
-    df = load_feature_data()
-
-    if df.empty:
-        raise ValueError(
-            "Feature dataset is empty"
-        )
-
-    latest_row = (
-        df.iloc[-1]
-        .copy()
+def load_regional_data(
+    region=None
+):
+    df = pd.read_csv(
+        REGIONAL_FEATURE_PATH
     )
 
-    missing_columns = [
-        feature
-        for feature in FEATURE_COLUMNS
-        if feature not in latest_row.index
-    ]
+    df["Date"] = pd.to_datetime(
+        df["Date"]
+    )
 
-    if missing_columns:
-        raise ValueError(
-            f"Missing feature columns: "
-            f"{missing_columns}"
+    df["forecast_date"] = (
+        pd.to_datetime(
+            df["forecast_date"]
+        )
+    )
+
+    if region:
+        df = df[
+            df["region"] == region
+        ].copy()
+
+    return (
+        df
+        .sort_values(
+            ["region", "Date"]
+        )
+        .reset_index(drop=True)
+    )
+
+
+# ==================================================
+# Validation
+# ==================================================
+
+def validate_region(
+    region
+):
+    if region not in REGIONS:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "message":
+                    "Invalid region",
+                "available_regions":
+                    REGIONS,
+            },
         )
 
-    feature_values = latest_row[
-        FEATURE_COLUMNS
-    ]
 
-    if feature_values.isna().any():
-        missing_features = (
-            feature_values[
-                feature_values.isna()
-            ]
-            .index
-            .tolist()
+def get_evaluation_scope(
+    forecast_date
+):
+    if (
+        forecast_date
+        >= pd.Timestamp(
+            "2026-01-01"
         )
+    ):
+        return "holdout"
 
-        raise ValueError(
-            f"Missing feature values: "
-            f"{missing_features}"
-        )
+    return (
+        "retrospective_training_period"
+    )
 
-    X_latest = pd.DataFrame(
+
+# ==================================================
+# Prediction Helpers
+# ==================================================
+
+def predict_national_row(
+    row
+):
+    model = load_registered_model(
+        NATIONAL_MODEL_NAME
+    )
+
+    X = pd.DataFrame(
         [
-            feature_values.to_dict()
+            row[
+                NATIONAL_FEATURE_COLUMNS
+            ].to_dict()
         ]
     )
 
-    return latest_row, X_latest
+    prediction = float(
+        model.predict(X)[0]
+    )
 
+    return prediction
+
+
+def predict_regional_row(
+    row,
+    region
+):
+    strategy = (
+        REGIONAL_STRATEGIES[
+            region
+        ]
+    )
+
+    if strategy == "baseline":
+        return float(
+            row[
+                "regional_demand_mw"
+            ]
+        )
+
+    model_name = (
+        REGIONAL_MODEL_NAMES[
+            region
+        ]
+    )
+
+    model = load_registered_model(
+        model_name
+    )
+
+    X = pd.DataFrame(
+        [
+            row[
+                REGIONAL_FEATURE_COLUMNS
+            ].to_dict()
+        ]
+    )
+
+    prediction = float(
+        model.predict(X)[0]
+    )
+
+    return prediction
+
+
+def build_prediction_response(
+    row,
+    region
+):
+    forecast_date = pd.Timestamp(
+        row["forecast_date"]
+    )
+
+    observation_date = pd.Timestamp(
+        row["Date"]
+    )
+
+    if region == "National":
+
+        current_demand = float(
+            row[
+                "total_demand"
+            ]
+        )
+
+        actual_demand = float(
+            row[
+                "next_day_total_demand"
+            ]
+        )
+
+        prediction = (
+            predict_national_row(
+                row
+            )
+        )
+
+        strategy = "ridge"
+
+        model_name = (
+            NATIONAL_MODEL_NAME
+        )
+
+    else:
+
+        current_demand = float(
+            row[
+                "regional_demand_mw"
+            ]
+        )
+
+        actual_demand = float(
+            row[
+                "next_day_demand_mw"
+            ]
+        )
+
+        prediction = (
+            predict_regional_row(
+                row,
+                region
+            )
+        )
+
+        strategy = (
+            REGIONAL_STRATEGIES[
+                region
+            ]
+        )
+
+        model_name = (
+            REGIONAL_MODEL_NAMES.get(
+                region
+            )
+        )
+
+    change = (
+        prediction
+        - current_demand
+    )
+
+    forecast_error = (
+        prediction
+        - actual_demand
+    )
+
+    absolute_error = abs(
+        forecast_error
+    )
+
+    if actual_demand != 0:
+        percentage_error = (
+            absolute_error
+            / actual_demand
+            * 100
+        )
+    else:
+        percentage_error = 0.0
+
+    if current_demand != 0:
+        change_percent = (
+            change
+            / current_demand
+            * 100
+        )
+    else:
+        change_percent = 0.0
+
+    return {
+        "region": region,
+
+        "observation_date": str(
+            observation_date.date()
+        ),
+
+        "forecast_date": str(
+            forecast_date.date()
+        ),
+
+        "current_demand_mw": round(
+            current_demand,
+            2
+        ),
+
+        "predicted_demand_mw": round(
+            prediction,
+            2
+        ),
+
+        "actual_demand_mw": round(
+            actual_demand,
+            2
+        ),
+
+        "change_from_previous_day_mw":
+            round(
+                change,
+                2
+            ),
+
+        "change_percent":
+            round(
+                change_percent,
+                2
+            ),
+
+        "forecast_error_mw":
+            round(
+                forecast_error,
+                2
+            ),
+
+        "absolute_error_mw":
+            round(
+                absolute_error,
+                2
+            ),
+
+        "percentage_error":
+            round(
+                percentage_error,
+                2
+            ),
+
+        "evaluation_scope":
+            get_evaluation_scope(
+                forecast_date
+            ),
+
+        "model": {
+            "strategy":
+                strategy,
+
+            "name":
+                model_name,
+
+            "alias":
+                (
+                    MODEL_ALIAS
+                    if model_name
+                    else None
+                ),
+
+            "source":
+                (
+                    "MLflow Model Registry"
+                    if strategy == "ridge"
+                    else
+                    "Persistence Baseline"
+                ),
+        },
+
+        "weather": {
+            "temperature_max_c":
+                float(
+                    row[
+                        "temperature_max_c"
+                    ]
+                ),
+
+            "temperature_min_c":
+                float(
+                    row[
+                        "temperature_min_c"
+                    ]
+                ),
+
+            "temperature_mean_c":
+                float(
+                    row[
+                        "temperature_mean_c"
+                    ]
+                ),
+
+            "precipitation_mm":
+                float(
+                    row[
+                        "precipitation_mm"
+                    ]
+                ),
+
+            "rain_mm":
+                float(
+                    row[
+                        "rain_mm"
+                    ]
+                ),
+        },
+    }
+
+
+# ==================================================
+# Startup
+# ==================================================
 
 @app.on_event("startup")
 def startup_event():
     logger.info(
-        "Starting electricity demand forecasting API"
+        "Starting forecasting API"
     )
 
-    load_registered_model()
+    setup_mlflow()
+
+    # Load national champion at startup
+    load_registered_model(
+        NATIONAL_MODEL_NAME
+    )
 
     logger.info(
         "API startup completed"
     )
 
 
+# ==================================================
+# Basic Endpoints
+# ==================================================
+
 @app.get("/")
 def root():
     return {
         "message": (
-            "Bangladesh Electricity Demand "
-            "Forecasting API"
+            "Bangladesh Electricity "
+            "Demand Forecasting API"
         ),
-        "version": "1.1.0",
-        "model_source": "MLflow Model Registry",
+        "version": "2.0.0",
         "docs": "/docs",
     }
 
@@ -232,123 +652,100 @@ def root():
 def health():
     return {
         "status": "healthy",
-        "model_status": (
-            "loaded"
-            if model is not None
-            else "not_loaded"
-        ),
-        "model_source": "mlflow_registry",
-        "model_alias": MODEL_ALIAS,
+        "national_model":
+            (
+                "loaded"
+                if NATIONAL_MODEL_NAME
+                in model_cache
+                else
+                "not_loaded"
+            ),
+        "model_registry":
+            "MLflow",
     }
 
 
-@app.get("/model/info")
-def model_info():
-    return MODEL_INFO
+# ==================================================
+# Regions
+# ==================================================
 
+@app.get("/regions")
+def get_regions():
+    regional_strategies = []
+
+    for region in REGIONS:
+
+        if region == "National":
+            strategy = "ridge"
+        else:
+            strategy = (
+                REGIONAL_STRATEGIES[
+                    region
+                ]
+            )
+
+        regional_strategies.append(
+            {
+                "region": region,
+                "strategy": strategy,
+            }
+        )
+
+    return {
+        "count": len(REGIONS),
+        "regions":
+            regional_strategies,
+    }
+
+
+# ==================================================
+# Latest Prediction
+# ==================================================
 
 @app.get("/predict/latest")
-def predict_latest():
+def predict_latest(
+    region: str = Query(
+        default="National"
+    )
+):
     try:
-        if model is None:
-            load_registered_model()
-
-        latest_row, X_latest = (
-            prepare_latest_features()
+        validate_region(
+            region
         )
 
-        logger.info(
-            "Generating latest next-day prediction"
-        )
+        if region == "National":
+            df = load_national_data()
+        else:
+            df = load_regional_data(
+                region
+            )
 
-        prediction = float(
-            model.predict(
-                X_latest
-            )[0]
-        )
-
-        current_demand = float(
-            latest_row["total_demand"]
-        )
-
-        difference = (
-            prediction
-            - current_demand
-        )
-
-        percentage_change = (
-            (difference / current_demand) * 100
-            if current_demand != 0
-            else 0.0
-        )
-
-        logger.info(
-            f"Prediction completed: "
-            f"{prediction:.2f} MW"
-        )
-
-        return {
-            "observation_date": str(
-                latest_row["Date"].date()
-            ),
-            "forecast_date": str(
-                latest_row[
-                    "forecast_date"
-                ].date()
-            ),
-            "current_demand_mw": round(
-                current_demand,
-                2
-            ),
-            "predicted_demand_mw": round(
-                prediction,
-                2
-            ),
-            "change_mw": round(
-                difference,
-                2
-            ),
-            "change_percent": round(
-                percentage_change,
-                2
-            ),
-            "model": {
-                "name": MODEL_NAME,
-                "alias": MODEL_ALIAS,
-                "source": "MLflow Model Registry",
-            },
-            "weather": {
-                "temperature_max_c": float(
-                    latest_row[
-                        "temperature_max_c"
-                    ]
+        if df.empty:
+            raise HTTPException(
+                status_code=404,
+                detail=(
+                    "No feature data "
+                    "available"
                 ),
-                "temperature_min_c": float(
-                    latest_row[
-                        "temperature_min_c"
-                    ]
-                ),
-                "temperature_mean_c": float(
-                    latest_row[
-                        "temperature_mean_c"
-                    ]
-                ),
-                "precipitation_mm": float(
-                    latest_row[
-                        "precipitation_mm"
-                    ]
-                ),
-                "rain_mm": float(
-                    latest_row[
-                        "rain_mm"
-                    ]
-                ),
-            },
-        }
+            )
+
+        latest_row = (
+            df.iloc[-1]
+        )
+
+        return (
+            build_prediction_response(
+                latest_row,
+                region
+            )
+        )
+
+    except HTTPException:
+        raise
 
     except Exception as error:
         logger.exception(
-            "Prediction failed"
+            "Latest prediction failed"
         )
 
         raise HTTPException(
@@ -357,23 +754,128 @@ def predict_latest():
         )
 
 
-@app.get("/history")
-def history(limit: int = 30):
-    try:
-        if limit < 1:
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    "limit must be greater than 0"
-                ),
-            )
+# ==================================================
+# Date-Specific Prediction
+# ==================================================
 
-        limit = min(
-            limit,
-            365
+@app.get("/predict/date")
+def predict_date(
+    forecast_date: date,
+    region: str = Query(
+        default="National"
+    ),
+):
+    try:
+        validate_region(
+            region
         )
 
-        df = load_feature_data()
+        requested_date = (
+            pd.Timestamp(
+                forecast_date
+            )
+        )
+
+        if region == "National":
+            df = load_national_data()
+
+        else:
+            df = load_regional_data(
+                region
+            )
+
+        selected = df[
+            df["forecast_date"]
+            == requested_date
+        ]
+
+        if selected.empty:
+            available_start = str(
+                df[
+                    "forecast_date"
+                ]
+                .min()
+                .date()
+            )
+
+            available_end = str(
+                df[
+                    "forecast_date"
+                ]
+                .max()
+                .date()
+            )
+
+            raise HTTPException(
+                status_code=404,
+                detail={
+                    "message":
+                        "No prediction data "
+                        "available for the "
+                        "selected date",
+
+                    "requested_date":
+                        str(
+                            forecast_date
+                        ),
+
+                    "available_start":
+                        available_start,
+
+                    "available_end":
+                        available_end,
+                },
+            )
+
+        row = selected.iloc[0]
+
+        return (
+            build_prediction_response(
+                row,
+                region
+            )
+        )
+
+    except HTTPException:
+        raise
+
+    except Exception as error:
+        logger.exception(
+            "Date prediction failed"
+        )
+
+        raise HTTPException(
+            status_code=500,
+            detail=str(error),
+        )
+
+
+# ==================================================
+# Historical Actual vs Predicted
+# ==================================================
+
+@app.get("/history")
+def history(
+    region: str = Query(
+        default="National"
+    ),
+    limit: int = Query(
+        default=90,
+        ge=1,
+        le=365,
+    ),
+):
+    try:
+        validate_region(
+            region
+        )
+
+        if region == "National":
+            df = load_national_data()
+        else:
+            df = load_regional_data(
+                region
+            )
 
         history_df = (
             df.tail(limit)
@@ -382,46 +884,56 @@ def history(limit: int = 30):
 
         records = []
 
-        for _, row in history_df.iterrows():
+        for _, row in (
+            history_df.iterrows()
+        ):
+
+            response = (
+                build_prediction_response(
+                    row,
+                    region
+                )
+            )
+
             records.append(
                 {
-                    "date": str(
-                        row["Date"].date()
-                    ),
-                    "forecast_date": str(
-                        row[
+                    "region":
+                        region,
+
+                    "date":
+                        response[
                             "forecast_date"
-                        ].date()
-                    ),
-                    "total_demand_mw": float(
-                        row[
-                            "total_demand"
-                        ]
-                    ),
-                    "next_day_actual_demand_mw": float(
-                        row[
-                            "next_day_total_demand"
-                        ]
-                    ),
-                    "temperature_mean_c": float(
-                        row[
-                            "temperature_mean_c"
-                        ]
-                    ),
-                    "is_holiday": int(
-                        row[
-                            "is_holiday"
-                        ]
-                    ),
-                    "is_weekend": int(
-                        row[
-                            "is_weekend"
-                        ]
-                    ),
+                        ],
+
+                    "actual_demand_mw":
+                        response[
+                            "actual_demand_mw"
+                        ],
+
+                    "predicted_demand_mw":
+                        response[
+                            "predicted_demand_mw"
+                        ],
+
+                    "absolute_error_mw":
+                        response[
+                            "absolute_error_mw"
+                        ],
+
+                    "percentage_error":
+                        response[
+                            "percentage_error"
+                        ],
+
+                    "evaluation_scope":
+                        response[
+                            "evaluation_scope"
+                        ],
                 }
             )
 
         return {
+            "region": region,
             "count": len(records),
             "records": records,
         }
@@ -431,10 +943,74 @@ def history(limit: int = 30):
 
     except Exception as error:
         logger.exception(
-            "Failed to load history"
+            "History request failed"
         )
 
         raise HTTPException(
             status_code=500,
             detail=str(error),
         )
+
+
+# ==================================================
+# Model Information
+# ==================================================
+
+@app.get("/model/info")
+def model_info(
+    region: str = Query(
+        default="National"
+    )
+):
+    validate_region(
+        region
+    )
+
+    if region == "National":
+
+        return {
+            "region": "National",
+            "strategy": "ridge",
+            "model_name":
+                NATIONAL_MODEL_NAME,
+            "alias":
+                MODEL_ALIAS,
+            "alpha": 0.01,
+            "cv_mean_mape": 4.8905,
+            "holdout_mape": 5.68,
+            "feature_count":
+                len(
+                    NATIONAL_FEATURE_COLUMNS
+                ),
+        }
+
+    strategy = (
+        REGIONAL_STRATEGIES[
+            region
+        ]
+    )
+
+    return {
+        "region": region,
+        "strategy": strategy,
+        "model_name":
+            REGIONAL_MODEL_NAMES.get(
+                region
+            ),
+        "alias":
+            (
+                MODEL_ALIAS
+                if strategy == "ridge"
+                else None
+            ),
+        "alpha":
+            (
+                0.01
+                if strategy == "ridge"
+                else None
+            ),
+        "feature_count":
+            len(
+                REGIONAL_FEATURE_COLUMNS
+            ),
+    }

@@ -23,3 +23,19 @@ stages:
       - data/raw/dhaka_weather.csv
     outs:
       - data/processed/model_features.csv
+  build_regional_target:
+    cmd: python -m src.features.build_regional_target
+    deps:
+      - src/features/build_regional_target.py
+      - data/processed/area_wise_demand_processed.csv
+    outs:
+      - data/processed/regional_daily_demand.csv
+
+  build_regional_features:
+    cmd: python -m src.features.build_regional_features
+    deps:
+      - src/features/build_regional_features.py
+      - data/processed/area_wise_demand_processed.csv
+      - data/raw/dhaka_weather.csv
+    outs:
+      - data/processed/regional_model_features.csv      
