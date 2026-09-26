@@ -3,3 +3,5 @@
 /model_features.csv
 /regional_daily_demand.csv
 /regional_model_features.csv
+/national_inference_features.csv
+/regional_inference_features.csv

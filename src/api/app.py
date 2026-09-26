@@ -15,9 +15,9 @@ from src.logger import get_logger
 logger = get_logger("api")
 
 
-# ==================================================
+# ============================================================
 # Configuration
-# ==================================================
+# ============================================================
 
 NATIONAL_FEATURE_PATH = (
     "data/processed/model_features.csv"
@@ -26,6 +26,15 @@ NATIONAL_FEATURE_PATH = (
 REGIONAL_FEATURE_PATH = (
     "data/processed/regional_model_features.csv"
 )
+
+NATIONAL_INFERENCE_PATH = (
+    "data/processed/national_inference_features.csv"
+)
+
+REGIONAL_INFERENCE_PATH = (
+    "data/processed/regional_inference_features.csv"
+)
+
 
 NATIONAL_MODEL_NAME = (
     "bangladesh-electricity-demand-ridge"
@@ -72,7 +81,6 @@ REGIONAL_MODEL_NAMES = {
 }
 
 
-# Regional deployment strategy selected from time-series CV
 REGIONAL_STRATEGIES = {
     "Barisal": "baseline",
     "Chittagong": "ridge",
@@ -136,9 +144,9 @@ REGIONAL_FEATURE_COLUMNS = [
 ]
 
 
-# ==================================================
+# ============================================================
 # App
-# ==================================================
+# ============================================================
 
 app = FastAPI(
     title=(
@@ -149,7 +157,7 @@ app = FastAPI(
         "National and regional next-day "
         "electricity demand forecasting API."
     ),
-    version="2.0.0",
+    version="3.0.0",
 )
 
 
@@ -162,13 +170,12 @@ app.add_middleware(
 )
 
 
-# Model cache
 model_cache = {}
 
 
-# ==================================================
+# ============================================================
 # MLflow
-# ==================================================
+# ============================================================
 
 def setup_mlflow():
     load_dotenv()
@@ -192,7 +199,7 @@ def setup_mlflow():
 
 
 def load_registered_model(
-    model_name
+    model_name,
 ):
     if model_name in model_cache:
         return model_cache[
@@ -224,9 +231,9 @@ def load_registered_model(
     return model
 
 
-# ==================================================
-# Data Loading
-# ==================================================
+# ============================================================
+# Historical / Evaluation Data
+# ============================================================
 
 def load_national_data():
     df = pd.read_csv(
@@ -237,10 +244,8 @@ def load_national_data():
         df["Date"]
     )
 
-    df["forecast_date"] = (
-        pd.to_datetime(
-            df["forecast_date"]
-        )
+    df["forecast_date"] = pd.to_datetime(
+        df["forecast_date"]
     )
 
     return (
@@ -251,7 +256,7 @@ def load_national_data():
 
 
 def load_regional_data(
-    region=None
+    region=None,
 ):
     df = pd.read_csv(
         REGIONAL_FEATURE_PATH
@@ -261,10 +266,8 @@ def load_regional_data(
         df["Date"]
     )
 
-    df["forecast_date"] = (
-        pd.to_datetime(
-            df["forecast_date"]
-        )
+    df["forecast_date"] = pd.to_datetime(
+        df["forecast_date"]
     )
 
     if region:
@@ -281,12 +284,65 @@ def load_regional_data(
     )
 
 
-# ==================================================
+# ============================================================
+# Live Inference Data
+# ============================================================
+
+def load_national_inference_data():
+    df = pd.read_csv(
+        NATIONAL_INFERENCE_PATH
+    )
+
+    df["Date"] = pd.to_datetime(
+        df["Date"]
+    )
+
+    df["forecast_date"] = pd.to_datetime(
+        df["forecast_date"]
+    )
+
+    return (
+        df
+        .sort_values("Date")
+        .reset_index(drop=True)
+    )
+
+
+def load_regional_inference_data(
+    region=None,
+):
+    df = pd.read_csv(
+        REGIONAL_INFERENCE_PATH
+    )
+
+    df["Date"] = pd.to_datetime(
+        df["Date"]
+    )
+
+    df["forecast_date"] = pd.to_datetime(
+        df["forecast_date"]
+    )
+
+    if region:
+        df = df[
+            df["region"] == region
+        ].copy()
+
+    return (
+        df
+        .sort_values(
+            ["region", "Date"]
+        )
+        .reset_index(drop=True)
+    )
+
+
+# ============================================================
 # Validation
-# ==================================================
+# ============================================================
 
 def validate_region(
-    region
+    region,
 ):
     if region not in REGIONS:
         raise HTTPException(
@@ -294,6 +350,7 @@ def validate_region(
             detail={
                 "message":
                     "Invalid region",
+
                 "available_regions":
                     REGIONS,
             },
@@ -301,7 +358,7 @@ def validate_region(
 
 
 def get_evaluation_scope(
-    forecast_date
+    forecast_date,
 ):
     if (
         forecast_date
@@ -316,12 +373,12 @@ def get_evaluation_scope(
     )
 
 
-# ==================================================
+# ============================================================
 # Prediction Helpers
-# ==================================================
+# ============================================================
 
 def predict_national_row(
-    row
+    row,
 ):
     model = load_registered_model(
         NATIONAL_MODEL_NAME
@@ -344,7 +401,7 @@ def predict_national_row(
 
 def predict_regional_row(
     row,
-    region
+    region,
 ):
     strategy = (
         REGIONAL_STRATEGIES[
@@ -384,9 +441,13 @@ def predict_regional_row(
     return prediction
 
 
+# ============================================================
+# Historical Prediction Response
+# ============================================================
+
 def build_prediction_response(
     row,
-    region
+    region,
 ):
     forecast_date = pd.Timestamp(
         row["forecast_date"]
@@ -397,7 +458,6 @@ def build_prediction_response(
     )
 
     if region == "National":
-
         current_demand = float(
             row[
                 "total_demand"
@@ -423,7 +483,6 @@ def build_prediction_response(
         )
 
     else:
-
         current_demand = float(
             row[
                 "regional_demand_mw"
@@ -439,7 +498,7 @@ def build_prediction_response(
         prediction = (
             predict_regional_row(
                 row,
-                region
+                region,
             )
         )
 
@@ -490,6 +549,9 @@ def build_prediction_response(
     return {
         "region": region,
 
+        "prediction_type":
+            "historical_evaluation",
+
         "observation_date": str(
             observation_date.date()
         ),
@@ -500,47 +562,47 @@ def build_prediction_response(
 
         "current_demand_mw": round(
             current_demand,
-            2
+            2,
         ),
 
         "predicted_demand_mw": round(
             prediction,
-            2
+            2,
         ),
 
         "actual_demand_mw": round(
             actual_demand,
-            2
+            2,
         ),
 
         "change_from_previous_day_mw":
             round(
                 change,
-                2
+                2,
             ),
 
         "change_percent":
             round(
                 change_percent,
-                2
+                2,
             ),
 
         "forecast_error_mw":
             round(
                 forecast_error,
-                2
+                2,
             ),
 
         "absolute_error_mw":
             round(
                 absolute_error,
-                2
+                2,
             ),
 
         "percentage_error":
             round(
                 percentage_error,
-                2
+                2,
             ),
 
         "evaluation_scope":
@@ -610,9 +672,208 @@ def build_prediction_response(
     }
 
 
-# ==================================================
+# ============================================================
+# Live Prediction Response
+# ============================================================
+
+def build_live_prediction_response(
+    row,
+    region,
+):
+    forecast_date = pd.Timestamp(
+        row["forecast_date"]
+    )
+
+    observation_date = pd.Timestamp(
+        row["Date"]
+    )
+
+    if region == "National":
+        current_demand = float(
+            row[
+                "total_demand"
+            ]
+        )
+
+        prediction = (
+            predict_national_row(
+                row
+            )
+        )
+
+        strategy = "ridge"
+
+        model_name = (
+            NATIONAL_MODEL_NAME
+        )
+
+    else:
+        current_demand = float(
+            row[
+                "regional_demand_mw"
+            ]
+        )
+
+        prediction = (
+            predict_regional_row(
+                row,
+                region,
+            )
+        )
+
+        strategy = (
+            REGIONAL_STRATEGIES[
+                region
+            ]
+        )
+
+        model_name = (
+            REGIONAL_MODEL_NAMES.get(
+                region
+            )
+        )
+
+    change = (
+        prediction
+        - current_demand
+    )
+
+    if current_demand != 0:
+        change_percent = (
+            change
+            / current_demand
+            * 100
+        )
+    else:
+        change_percent = 0.0
+
+    return {
+        "region": region,
+
+        "prediction_type":
+            "live_inference",
+
+        "observation_date": str(
+            observation_date.date()
+        ),
+
+        "forecast_date": str(
+            forecast_date.date()
+        ),
+
+        "current_demand_mw": round(
+            current_demand,
+            2,
+        ),
+
+        "predicted_demand_mw": round(
+            prediction,
+            2,
+        ),
+
+        "actual_demand_mw": None,
+
+        "change_from_previous_day_mw":
+            round(
+                change,
+                2,
+            ),
+
+        "change_percent":
+            round(
+                change_percent,
+                2,
+            ),
+
+        "forecast_error_mw": None,
+
+        "absolute_error_mw": None,
+
+        "percentage_error": None,
+
+        "evaluation_scope":
+            "live_forecast",
+
+        "data_status": {
+            "latest_real_observation_date":
+                str(
+                    observation_date.date()
+                ),
+
+            "forecast_date":
+                str(
+                    forecast_date.date()
+                ),
+
+            "future_actual_available":
+                False,
+        },
+
+        "model": {
+            "strategy":
+                strategy,
+
+            "name":
+                model_name,
+
+            "alias":
+                (
+                    MODEL_ALIAS
+                    if model_name
+                    else None
+                ),
+
+            "source":
+                (
+                    "MLflow Model Registry"
+                    if strategy == "ridge"
+                    else
+                    "Persistence Baseline"
+                ),
+        },
+
+        "weather": {
+            "temperature_max_c":
+                float(
+                    row[
+                        "temperature_max_c"
+                    ]
+                ),
+
+            "temperature_min_c":
+                float(
+                    row[
+                        "temperature_min_c"
+                    ]
+                ),
+
+            "temperature_mean_c":
+                float(
+                    row[
+                        "temperature_mean_c"
+                    ]
+                ),
+
+            "precipitation_mm":
+                float(
+                    row[
+                        "precipitation_mm"
+                    ]
+                ),
+
+            "rain_mm":
+                float(
+                    row[
+                        "rain_mm"
+                    ]
+                ),
+        },
+    }
+
+
+# ============================================================
 # Startup
-# ==================================================
+# ============================================================
 
 @app.on_event("startup")
 def startup_event():
@@ -622,7 +883,6 @@ def startup_event():
 
     setup_mlflow()
 
-    # Load national champion at startup
     load_registered_model(
         NATIONAL_MODEL_NAME
     )
@@ -632,9 +892,9 @@ def startup_event():
     )
 
 
-# ==================================================
-# Basic Endpoints
-# ==================================================
+# ============================================================
+# Root
+# ============================================================
 
 @app.get("/")
 def root():
@@ -643,15 +903,22 @@ def root():
             "Bangladesh Electricity "
             "Demand Forecasting API"
         ),
-        "version": "2.0.0",
+
+        "version": "3.0.0",
+
         "docs": "/docs",
     }
 
+
+# ============================================================
+# Health
+# ============================================================
 
 @app.get("/health")
 def health():
     return {
         "status": "healthy",
+
         "national_model":
             (
                 "loaded"
@@ -660,23 +927,27 @@ def health():
                 else
                 "not_loaded"
             ),
+
         "model_registry":
             "MLflow",
+
+        "live_inference":
+            True,
     }
 
 
-# ==================================================
+# ============================================================
 # Regions
-# ==================================================
+# ============================================================
 
 @app.get("/regions")
 def get_regions():
     regional_strategies = []
 
     for region in REGIONS:
-
         if region == "National":
             strategy = "ridge"
+
         else:
             strategy = (
                 REGIONAL_STRATEGIES[
@@ -693,20 +964,21 @@ def get_regions():
 
     return {
         "count": len(REGIONS),
+
         "regions":
             regional_strategies,
     }
 
 
-# ==================================================
-# Latest Prediction
-# ==================================================
+# ============================================================
+# Latest Live Prediction
+# ============================================================
 
 @app.get("/predict/latest")
 def predict_latest(
     region: str = Query(
         default="National"
-    )
+    ),
 ):
     try:
         validate_region(
@@ -714,18 +986,23 @@ def predict_latest(
         )
 
         if region == "National":
-            df = load_national_data()
+            df = (
+                load_national_inference_data()
+            )
+
         else:
-            df = load_regional_data(
-                region
+            df = (
+                load_regional_inference_data(
+                    region
+                )
             )
 
         if df.empty:
             raise HTTPException(
                 status_code=404,
                 detail=(
-                    "No feature data "
-                    "available"
+                    "No live inference "
+                    "features available"
                 ),
             )
 
@@ -734,9 +1011,9 @@ def predict_latest(
         )
 
         return (
-            build_prediction_response(
+            build_live_prediction_response(
                 latest_row,
-                region
+                region,
             )
         )
 
@@ -745,7 +1022,7 @@ def predict_latest(
 
     except Exception as error:
         logger.exception(
-            "Latest prediction failed"
+            "Latest live prediction failed"
         )
 
         raise HTTPException(
@@ -754,13 +1031,14 @@ def predict_latest(
         )
 
 
-# ==================================================
-# Date-Specific Prediction
-# ==================================================
+# ============================================================
+# Date-Specific Historical Prediction
+# ============================================================
 
 @app.get("/predict/date")
 def predict_date(
     forecast_date: date,
+
     region: str = Query(
         default="National"
     ),
@@ -832,7 +1110,7 @@ def predict_date(
         return (
             build_prediction_response(
                 row,
-                region
+                region,
             )
         )
 
@@ -850,15 +1128,16 @@ def predict_date(
         )
 
 
-# ==================================================
+# ============================================================
 # Historical Actual vs Predicted
-# ==================================================
+# ============================================================
 
 @app.get("/history")
 def history(
     region: str = Query(
         default="National"
     ),
+
     limit: int = Query(
         default=90,
         ge=1,
@@ -872,6 +1151,7 @@ def history(
 
         if region == "National":
             df = load_national_data()
+
         else:
             df = load_regional_data(
                 region
@@ -887,11 +1167,10 @@ def history(
         for _, row in (
             history_df.iterrows()
         ):
-
             response = (
                 build_prediction_response(
                     row,
-                    region
+                    region,
                 )
             )
 
@@ -934,8 +1213,12 @@ def history(
 
         return {
             "region": region,
-            "count": len(records),
-            "records": records,
+
+            "count":
+                len(records),
+
+            "records":
+                records,
         }
 
     except HTTPException:
@@ -952,32 +1235,43 @@ def history(
         )
 
 
-# ==================================================
+# ============================================================
 # Model Information
-# ==================================================
+# ============================================================
 
 @app.get("/model/info")
 def model_info(
     region: str = Query(
         default="National"
-    )
+    ),
 ):
     validate_region(
         region
     )
 
     if region == "National":
-
         return {
-            "region": "National",
-            "strategy": "ridge",
+            "region":
+                "National",
+
+            "strategy":
+                "ridge",
+
             "model_name":
                 NATIONAL_MODEL_NAME,
+
             "alias":
                 MODEL_ALIAS,
-            "alpha": 0.01,
-            "cv_mean_mape": 4.8905,
-            "holdout_mape": 5.68,
+
+            "alpha":
+                0.01,
+
+            "cv_mean_mape":
+                4.8905,
+
+            "holdout_mape":
+                5.68,
+
             "feature_count":
                 len(
                     NATIONAL_FEATURE_COLUMNS
@@ -991,24 +1285,31 @@ def model_info(
     )
 
     return {
-        "region": region,
-        "strategy": strategy,
+        "region":
+            region,
+
+        "strategy":
+            strategy,
+
         "model_name":
             REGIONAL_MODEL_NAMES.get(
                 region
             ),
+
         "alias":
             (
                 MODEL_ALIAS
                 if strategy == "ridge"
                 else None
             ),
+
         "alpha":
             (
                 0.01
                 if strategy == "ridge"
                 else None
             ),
+
         "feature_count":
             len(
                 REGIONAL_FEATURE_COLUMNS

@@ -88,3 +88,27 @@ stages:
       hash: md5
       md5: c22ab5fd33111ce9055a520486d3f4dd
       size: 3610776
+  build_inference_features:
+    cmd: python -m src.features.build_inference_features
+    deps:
+    - path: data/processed/area_wise_demand_processed.csv
+      hash: md5
+      md5: 28b26c916a616f6703a7c22420643b58
+      size: 776693
+    - path: data/raw/dhaka_weather.csv
+      hash: md5
+      md5: 374686eda7a29c17b1fca2d74acd6424
+      size: 86927
+    - path: src/features/build_inference_features.py
+      hash: md5
+      md5: f9f95bc1e71237ff175befdce225df92
+      size: 17616
+    outs:
+    - path: data/processed/national_inference_features.csv
+      hash: md5
+      md5: d3bb776cfe6ee0a93e3ba1590c7a3a87
+      size: 374289
+    - path: data/processed/regional_inference_features.csv
+      hash: md5
+      md5: b0eaf91555a2aa6d626acff58bd13991
+      size: 3440665

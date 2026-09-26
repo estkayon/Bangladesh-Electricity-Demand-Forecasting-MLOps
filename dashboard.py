@@ -224,22 +224,37 @@ st.subheader(f"{selected_region} Forecast Overview")
 
 c1, c2, c3, c4 = st.columns(4)
 
+latest_change = float(latest_data.get("change_from_previous_day_mw", 0) or 0)
+latest_change_percent = float(latest_data.get("change_percent", 0) or 0)
+latest_direction_symbol = "+" if latest_change >= 0 else "-"
+
 c1.metric(
     "Predicted Demand",
     f"{format_number(latest_data.get('predicted_demand_mw'))} MW",
-    help=f"Forecast date: {latest_data.get('forecast_date', 'N/A')}",
+    help="Next-day demand forecast based on the latest real BPDB observation.",
 )
 c2.metric(
-    "Actual Demand",
-    f"{format_number(latest_data.get('actual_demand_mw'))} MW",
+    "Current Demand",
+    f"{format_number(latest_data.get('current_demand_mw'))} MW",
+    help=f"Latest real BPDB observation: {latest_data.get('observation_date', 'N/A')}",
 )
 c3.metric(
-    "Absolute Error",
-    f"{format_number(latest_data.get('absolute_error_mw'))} MW",
+    "Expected Change",
+    f"{latest_direction_symbol}{format_number(abs(latest_change))} MW",
+    delta=f"{latest_direction_symbol}{format_number(abs(latest_change_percent))}%",
+    help="Predicted change relative to the latest observed demand.",
 )
 c4.metric(
-    "Percentage Error",
-    f"{format_number(latest_data.get('percentage_error'))}%",
+    "Forecast Date",
+    latest_data.get("forecast_date", "N/A"),
+    help="Actual demand is not yet available for this live forecast.",
+)
+
+st.info(
+    f"Live forecast · Latest real BPDB observation: "
+    f"{latest_data.get('observation_date', 'N/A')} · "
+    f"Future actual demand for {latest_data.get('forecast_date', 'N/A')} "
+    "is not available yet."
 )
 
 
@@ -574,6 +589,8 @@ Preprocessing & Missing-Date Handling
         ▼
 Feature Engineering
         │
+        ├── Training / Evaluation Features
+        ├── Live Inference Features
         ├── Calendar Features
         ├── Bangladesh Holidays
         ├── Weather Features
@@ -605,16 +622,17 @@ Streamlit Dashboard
 )
 
 st.info(
-    "Current limitation: the latest forecast available in the "
-    "training/evaluation feature dataset may lag behind today's calendar "
-    "date because this dataset requires a known next-day target. A separate "
-    "live inference feature pipeline will be added so current forecasts do "
-    "not depend on future actual demand."
+    "Data availability note: live next-day forecasts use the latest real BPDB "
+    "observation. If BPDB has not published recent area-wise demand data, the "
+    "latest forecast date will also lag behind the current calendar date. "
+    "Imputed demand values are not used as live observations."
 )
 
 render_html(
     """
     <div class="footer-text">
+        © 2026 Md. Estiak Rahman Ayon. All rights reserved.
+        <br>
         Bangladesh Electricity Demand Forecasting MLOps Platform
         · FastAPI · MLflow · DVC · Streamlit
     </div>

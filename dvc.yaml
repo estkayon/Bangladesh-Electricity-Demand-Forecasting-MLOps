@@ -39,3 +39,13 @@ stages:
       - data/raw/dhaka_weather.csv
     outs:
       - data/processed/regional_model_features.csv      
+  
+  build_inference_features:
+    cmd: python -m src.features.build_inference_features
+    deps:
+      - src/features/build_inference_features.py
+      - data/processed/area_wise_demand_processed.csv
+      - data/raw/dhaka_weather.csv
+    outs:
+      - data/processed/national_inference_features.csv
+      - data/processed/regional_inference_features.csv
