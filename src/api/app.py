@@ -36,13 +36,21 @@ REGIONAL_INFERENCE_PATH = (
     "data/processed/regional_inference_features.csv"
 )
 
-BRIDGE_FORECAST_PATH = Path(
+NATIONAL_BRIDGE_FORECAST_PATH = Path(
     "data/processed/bridge_forecast.csv"
+)
+
+REGIONAL_BRIDGE_FORECAST_PATH = Path(
+    "data/processed/regional_bridge_forecast.csv"
 )
 
 
 NATIONAL_MODEL_NAME = (
     "bangladesh-electricity-demand-ridge"
+)
+
+NATIONAL_BRIDGE_MODEL_NAME = (
+    "bangladesh-electricity-demand-bridge"
 )
 
 MODEL_ALIAS = "champion"
@@ -85,6 +93,36 @@ REGIONAL_MODEL_NAMES = {
 
     "Sylhet":
         "bangladesh-electricity-demand-sylhet-ridge",
+}
+
+
+REGIONAL_BRIDGE_MODEL_NAMES = {
+    "Barisal":
+        "bangladesh-electricity-demand-barisal-bridge",
+
+    "Chittagong":
+        "bangladesh-electricity-demand-chittagong-bridge",
+
+    "Comilla":
+        "bangladesh-electricity-demand-comilla-bridge",
+
+    "Dhaka":
+        "bangladesh-electricity-demand-dhaka-bridge",
+
+    "Khulna":
+        "bangladesh-electricity-demand-khulna-bridge",
+
+    "Mymensingh":
+        "bangladesh-electricity-demand-mymensingh-bridge",
+
+    "Rajshahi":
+        "bangladesh-electricity-demand-rajshahi-bridge",
+
+    "Rangpur":
+        "bangladesh-electricity-demand-rangpur-bridge",
+
+    "Sylhet":
+        "bangladesh-electricity-demand-sylhet-bridge",
 }
 
 
@@ -152,7 +190,7 @@ REGIONAL_FEATURE_COLUMNS = [
 
 
 # ============================================================
-# FastAPI App
+# FastAPI
 # ============================================================
 
 app = FastAPI(
@@ -161,10 +199,11 @@ app = FastAPI(
         "Forecasting API"
     ),
     description=(
-        "National and regional next-day demand "
-        "forecasting with Anchor and Bridge forecasts."
+        "National and regional electricity "
+        "demand forecasting with Anchor and "
+        "Extended Bridge Forecasts."
     ),
-    version="4.0.0",
+    version="5.0.0",
 )
 
 
@@ -239,7 +278,7 @@ def load_registered_model(
 
 
 # ============================================================
-# Historical / Evaluation Data
+# Historical Data
 # ============================================================
 
 def load_national_data():
@@ -285,7 +324,10 @@ def load_regional_data(
     return (
         df
         .sort_values(
-            ["region", "Date"]
+            [
+                "region",
+                "Date",
+            ]
         )
         .reset_index(drop=True)
     )
@@ -338,35 +380,39 @@ def load_regional_inference_data(
     return (
         df
         .sort_values(
-            ["region", "Date"]
+            [
+                "region",
+                "Date",
+            ]
         )
         .reset_index(drop=True)
     )
 
 
 # ============================================================
-# Bridge Forecast Data
+# Extended Forecast Data
 # ============================================================
 
-def load_bridge_forecast_data():
-    if not BRIDGE_FORECAST_PATH.exists():
+def load_national_bridge_data():
+    if not NATIONAL_BRIDGE_FORECAST_PATH.exists():
         raise HTTPException(
             status_code=404,
             detail=(
-                "Bridge forecast file not found. "
-                "Run generate_bridge_forecast first."
+                "National Bridge forecast "
+                "file not found."
             ),
         )
 
     df = pd.read_csv(
-        BRIDGE_FORECAST_PATH
+        NATIONAL_BRIDGE_FORECAST_PATH
     )
 
     if df.empty:
         raise HTTPException(
             status_code=404,
             detail=(
-                "Bridge forecast dataset is empty."
+                "National Bridge forecast "
+                "dataset is empty."
             ),
         )
 
@@ -374,18 +420,78 @@ def load_bridge_forecast_data():
         df["forecast_date"]
     )
 
-    if "latest_real_bpdb_date" in df.columns:
-        df[
-            "latest_real_bpdb_date"
-        ] = pd.to_datetime(
+    df["latest_real_bpdb_date"] = (
+        pd.to_datetime(
             df[
                 "latest_real_bpdb_date"
             ]
         )
+    )
 
     return (
         df
-        .sort_values("forecast_date")
+        .sort_values(
+            "forecast_date"
+        )
+        .reset_index(drop=True)
+    )
+
+
+def load_regional_bridge_data(
+    region,
+):
+    if not REGIONAL_BRIDGE_FORECAST_PATH.exists():
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                "Regional Bridge forecast "
+                "file not found."
+            ),
+        )
+
+    df = pd.read_csv(
+        REGIONAL_BRIDGE_FORECAST_PATH
+    )
+
+    if df.empty:
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                "Regional Bridge forecast "
+                "dataset is empty."
+            ),
+        )
+
+    df["forecast_date"] = pd.to_datetime(
+        df["forecast_date"]
+    )
+
+    df["latest_real_bpdb_date"] = (
+        pd.to_datetime(
+            df[
+                "latest_real_bpdb_date"
+            ]
+        )
+    )
+
+    df = df[
+        df["region"] == region
+    ].copy()
+
+    if df.empty:
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                f"No extended forecast "
+                f"available for {region}"
+            ),
+        )
+
+    return (
+        df
+        .sort_values(
+            "forecast_date"
+        )
         .reset_index(drop=True)
     )
 
@@ -445,11 +551,9 @@ def predict_national_row(
         ]
     )
 
-    prediction = float(
+    return float(
         model.predict(X)[0]
     )
-
-    return prediction
 
 
 def predict_regional_row(
@@ -487,15 +591,13 @@ def predict_regional_row(
         ]
     )
 
-    prediction = float(
+    return float(
         model.predict(X)[0]
     )
 
-    return prediction
-
 
 # ============================================================
-# Historical Prediction Response
+# Historical Response
 # ============================================================
 
 def build_prediction_response(
@@ -598,33 +700,39 @@ def build_prediction_response(
         change_percent = 0.0
 
     return {
-        "region": region,
+        "region":
+            region,
 
         "prediction_type":
             "historical_evaluation",
 
-        "observation_date": str(
-            observation_date.date()
-        ),
+        "observation_date":
+            str(
+                observation_date.date()
+            ),
 
-        "forecast_date": str(
-            forecast_date.date()
-        ),
+        "forecast_date":
+            str(
+                forecast_date.date()
+            ),
 
-        "current_demand_mw": round(
-            current_demand,
-            2,
-        ),
+        "current_demand_mw":
+            round(
+                current_demand,
+                2,
+            ),
 
-        "predicted_demand_mw": round(
-            prediction,
-            2,
-        ),
+        "predicted_demand_mw":
+            round(
+                prediction,
+                2,
+            ),
 
-        "actual_demand_mw": round(
-            actual_demand,
-            2,
-        ),
+        "actual_demand_mw":
+            round(
+                actual_demand,
+                2,
+            ),
 
         "change_from_previous_day_mw":
             round(
@@ -674,57 +782,12 @@ def build_prediction_response(
                     if model_name
                     else None
                 ),
-
-            "source":
-                (
-                    "MLflow Model Registry"
-                    if strategy == "ridge"
-                    else
-                    "Persistence Baseline"
-                ),
-        },
-
-        "weather": {
-            "temperature_max_c":
-                float(
-                    row[
-                        "temperature_max_c"
-                    ]
-                ),
-
-            "temperature_min_c":
-                float(
-                    row[
-                        "temperature_min_c"
-                    ]
-                ),
-
-            "temperature_mean_c":
-                float(
-                    row[
-                        "temperature_mean_c"
-                    ]
-                ),
-
-            "precipitation_mm":
-                float(
-                    row[
-                        "precipitation_mm"
-                    ]
-                ),
-
-            "rain_mm":
-                float(
-                    row[
-                        "rain_mm"
-                    ]
-                ),
         },
     }
 
 
 # ============================================================
-# Live Prediction Response
+# Live Response
 # ============================================================
 
 def build_live_prediction_response(
@@ -741,9 +804,7 @@ def build_live_prediction_response(
 
     if region == "National":
         current_demand = float(
-            row[
-                "total_demand"
-            ]
+            row["total_demand"]
         )
 
         prediction = (
@@ -799,30 +860,36 @@ def build_live_prediction_response(
         change_percent = 0.0
 
     return {
-        "region": region,
+        "region":
+            region,
 
         "prediction_type":
             "live_inference",
 
-        "observation_date": str(
-            observation_date.date()
-        ),
+        "observation_date":
+            str(
+                observation_date.date()
+            ),
 
-        "forecast_date": str(
-            forecast_date.date()
-        ),
+        "forecast_date":
+            str(
+                forecast_date.date()
+            ),
 
-        "current_demand_mw": round(
-            current_demand,
-            2,
-        ),
+        "current_demand_mw":
+            round(
+                current_demand,
+                2,
+            ),
 
-        "predicted_demand_mw": round(
-            prediction,
-            2,
-        ),
+        "predicted_demand_mw":
+            round(
+                prediction,
+                2,
+            ),
 
-        "actual_demand_mw": None,
+        "actual_demand_mw":
+            None,
 
         "change_from_previous_day_mw":
             round(
@@ -836,11 +903,14 @@ def build_live_prediction_response(
                 2,
             ),
 
-        "forecast_error_mw": None,
+        "forecast_error_mw":
+            None,
 
-        "absolute_error_mw": None,
+        "absolute_error_mw":
+            None,
 
-        "percentage_error": None,
+        "percentage_error":
+            None,
 
         "evaluation_scope":
             "live_forecast",
@@ -849,11 +919,6 @@ def build_live_prediction_response(
             "latest_real_observation_date":
                 str(
                     observation_date.date()
-                ),
-
-            "forecast_date":
-                str(
-                    forecast_date.date()
                 ),
 
             "future_actual_available":
@@ -873,52 +938,213 @@ def build_live_prediction_response(
                     if model_name
                     else None
                 ),
+        },
+    }
 
-            "source":
-                (
-                    "MLflow Model Registry"
-                    if strategy == "ridge"
-                    else
-                    "Persistence Baseline"
+
+# ============================================================
+# Extended Forecast Response
+# ============================================================
+
+def build_extended_response(
+    df,
+    region,
+):
+    latest_real_date = (
+        df[
+            "latest_real_bpdb_date"
+        ]
+        .iloc[0]
+    )
+
+    forecasts = []
+
+    for _, row in df.iterrows():
+        mode = str(
+            row[
+                "forecast_mode"
+            ]
+        )
+
+        horizon_day = int(
+            row[
+                "horizon_day"
+            ]
+        )
+
+        if mode == "anchor":
+            display_label = (
+                "Anchored Forecast"
+            )
+
+            confidence_note = (
+                "Direct next-day forecast "
+                "based on the latest real "
+                "BPDB observation."
+            )
+
+        else:
+            display_label = (
+                "Extended Bridge Forecast"
+            )
+
+            confidence_note = (
+                "Recursive estimate beyond "
+                "the latest published BPDB "
+                "observation."
+            )
+
+        actual_demand = None
+
+        if (
+            "actual_demand_mw"
+            in df.columns
+            and pd.notna(
+                row[
+                    "actual_demand_mw"
+                ]
+            )
+        ):
+            actual_demand = round(
+                float(
+                    row[
+                        "actual_demand_mw"
+                    ]
                 ),
+                2,
+            )
+
+        forecasts.append(
+            {
+                "forecast_date":
+                    str(
+                        pd.Timestamp(
+                            row[
+                                "forecast_date"
+                            ]
+                        ).date()
+                    ),
+
+                "horizon_day":
+                    horizon_day,
+
+                "forecast_mode":
+                    mode,
+
+                "display_label":
+                    display_label,
+
+                "predicted_demand_mw":
+                    round(
+                        float(
+                            row[
+                                "predicted_demand_mw"
+                            ]
+                        ),
+                        2,
+                    ),
+
+                "actual_demand_mw":
+                    actual_demand,
+
+                "actual_available":
+                    bool(
+                        actual_demand
+                        is not None
+                    ),
+
+                "forecast_status":
+                    str(
+                        row[
+                            "forecast_status"
+                        ]
+                    ),
+
+                "validated_horizon":
+                    bool(
+                        row[
+                            "validated_horizon"
+                        ]
+                    ),
+
+                "model_name":
+                    str(
+                        row[
+                            "model_name"
+                        ]
+                    ),
+
+                "model_alias":
+                    (
+                        None
+                        if pd.isna(
+                            row[
+                                "model_alias"
+                            ]
+                        )
+                        else str(
+                            row[
+                                "model_alias"
+                            ]
+                        )
+                    ),
+
+                "confidence_note":
+                    confidence_note,
+            }
+        )
+
+    return {
+        "region":
+            region,
+
+        "prediction_type":
+            "extended_forecast",
+
+        "latest_real_bpdb_date":
+            str(
+                latest_real_date.date()
+            ),
+
+        "validated_max_horizon_days":
+            MAX_BRIDGE_HORIZON,
+
+        "forecast_start":
+            forecasts[0][
+                "forecast_date"
+            ],
+
+        "forecast_end":
+            forecasts[-1][
+                "forecast_date"
+            ],
+
+        "forecast_count":
+            len(
+                forecasts
+            ),
+
+        "actual_values_available":
+            any(
+                item[
+                    "actual_available"
+                ]
+                for item in forecasts
+            ),
+
+        "forecast_policy": {
+            "day_1":
+                "anchor",
+
+            "day_2_to_day_8":
+                "bridge",
+
+            "beyond_day_8":
+                "not_served",
         },
 
-        "weather": {
-            "temperature_max_c":
-                float(
-                    row[
-                        "temperature_max_c"
-                    ]
-                ),
-
-            "temperature_min_c":
-                float(
-                    row[
-                        "temperature_min_c"
-                    ]
-                ),
-
-            "temperature_mean_c":
-                float(
-                    row[
-                        "temperature_mean_c"
-                    ]
-                ),
-
-            "precipitation_mm":
-                float(
-                    row[
-                        "precipitation_mm"
-                    ]
-                ),
-
-            "rain_mm":
-                float(
-                    row[
-                        "rain_mm"
-                    ]
-                ),
-        },
+        "forecasts":
+            forecasts,
     }
 
 
@@ -950,14 +1176,25 @@ def startup_event():
 @app.get("/")
 def root():
     return {
-        "message": (
-            "Bangladesh Electricity "
-            "Demand Forecasting API"
-        ),
+        "message":
+            (
+                "Bangladesh Electricity "
+                "Demand Forecasting API"
+            ),
 
-        "version": "4.0.0",
+        "version":
+            "5.0.0",
 
-        "docs": "/docs",
+        "docs":
+            "/docs",
+
+        "features": [
+            "National forecasting",
+            "Regional forecasting",
+            "Historical evaluation",
+            "Live next-day forecasting",
+            "Extended Bridge forecasting",
+        ],
     }
 
 
@@ -967,12 +1204,9 @@ def root():
 
 @app.get("/health")
 def health():
-    bridge_ready = (
-        BRIDGE_FORECAST_PATH.exists()
-    )
-
     return {
-        "status": "healthy",
+        "status":
+            "healthy",
 
         "national_model":
             (
@@ -989,10 +1223,24 @@ def health():
         "live_inference":
             True,
 
-        "bridge_forecast":
+        "national_bridge_forecast":
             (
                 "available"
-                if bridge_ready
+                if (
+                    NATIONAL_BRIDGE_FORECAST_PATH
+                    .exists()
+                )
+                else
+                "unavailable"
+            ),
+
+        "regional_bridge_forecast":
+            (
+                "available"
+                if (
+                    REGIONAL_BRIDGE_FORECAST_PATH
+                    .exists()
+                )
                 else
                 "unavailable"
             ),
@@ -1005,31 +1253,41 @@ def health():
 
 @app.get("/regions")
 def get_regions():
-    regional_strategies = []
+    results = []
 
     for region in REGIONS:
         if region == "National":
-            strategy = "ridge"
+            anchor_strategy = "ridge"
+            bridge_available = True
 
         else:
-            strategy = (
+            anchor_strategy = (
                 REGIONAL_STRATEGIES[
                     region
                 ]
             )
 
-        regional_strategies.append(
+            bridge_available = True
+
+        results.append(
             {
-                "region": region,
-                "strategy": strategy,
+                "region":
+                    region,
+
+                "anchor_strategy":
+                    anchor_strategy,
+
+                "extended_forecast":
+                    bridge_available,
             }
         )
 
     return {
-        "count": len(REGIONS),
+        "count":
+            len(REGIONS),
 
         "regions":
-            regional_strategies,
+            results,
     }
 
 
@@ -1095,174 +1353,46 @@ def predict_latest(
 
 
 # ============================================================
-# Extended Anchor + Bridge Forecast
+# Extended Forecast
 # ============================================================
 
 @app.get("/predict/extended")
-def predict_extended():
+def predict_extended(
+    region: str = Query(
+        default="National"
+    ),
+):
     try:
-        df = (
-            load_bridge_forecast_data()
+        validate_region(
+            region
         )
 
-        latest_real_date = (
-            df[
-                "latest_real_bpdb_date"
-            ]
-            .iloc[0]
+        if region == "National":
+            df = (
+                load_national_bridge_data()
+            )
+
+        else:
+            df = (
+                load_regional_bridge_data(
+                    region
+                )
+            )
+
+        return (
+            build_extended_response(
+                df=df,
+                region=region,
+            )
         )
-
-        forecasts = []
-
-        for _, row in df.iterrows():
-            mode = str(
-                row[
-                    "forecast_mode"
-                ]
-            )
-
-            horizon_day = int(
-                row[
-                    "horizon_day"
-                ]
-            )
-
-            if mode == "anchor":
-                display_label = (
-                    "Anchored Forecast"
-                )
-
-                confidence_note = (
-                    "Direct next-day forecast "
-                    "based on the latest real "
-                    "BPDB observation."
-                )
-
-            else:
-                display_label = (
-                    "Extended Bridge Forecast"
-                )
-
-                confidence_note = (
-                    "Recursive estimate beyond "
-                    "the latest published BPDB "
-                    "observation."
-                )
-
-            forecasts.append(
-                {
-                    "forecast_date":
-                        str(
-                            pd.Timestamp(
-                                row[
-                                    "forecast_date"
-                                ]
-                            ).date()
-                        ),
-
-                    "horizon_day":
-                        horizon_day,
-
-                    "forecast_mode":
-                        mode,
-
-                    "display_label":
-                        display_label,
-
-                    "predicted_demand_mw":
-                        round(
-                            float(
-                                row[
-                                    "predicted_demand_mw"
-                                ]
-                            ),
-                            2,
-                        ),
-
-                    "actual_demand_mw":
-                        None,
-
-                    "actual_available":
-                        False,
-
-                    "forecast_status":
-                        row[
-                            "forecast_status"
-                        ],
-
-                    "validated_horizon":
-                        bool(
-                            row[
-                                "validated_horizon"
-                            ]
-                        ),
-
-                    "model_name":
-                        row[
-                            "model_name"
-                        ],
-
-                    "model_alias":
-                        row[
-                            "model_alias"
-                        ],
-
-                    "confidence_note":
-                        confidence_note,
-                }
-            )
-
-        return {
-            "region":
-                "National",
-
-            "latest_real_bpdb_date":
-                str(
-                    latest_real_date.date()
-                ),
-
-            "validated_max_horizon_days":
-                MAX_BRIDGE_HORIZON,
-
-            "forecast_start":
-                forecasts[0][
-                    "forecast_date"
-                ],
-
-            "forecast_end":
-                forecasts[-1][
-                    "forecast_date"
-                ],
-
-            "forecast_count":
-                len(
-                    forecasts
-                ),
-
-            "actual_values_available":
-                False,
-
-            "forecast_policy": {
-                "day_1":
-                    "anchor",
-
-                "day_2_to_day_8":
-                    "bridge",
-
-                "beyond_day_8":
-                    "not_served",
-            },
-
-            "forecasts":
-                forecasts,
-        }
 
     except HTTPException:
         raise
 
     except Exception as error:
         logger.exception(
-            "Extended prediction failed"
+            f"Extended prediction failed "
+            f"for {region}"
         )
 
         raise HTTPException(
@@ -1272,7 +1402,7 @@ def predict_extended():
 
 
 # ============================================================
-# Date-Specific Historical Prediction
+# Historical Date Prediction
 # ============================================================
 
 @app.get("/predict/date")
@@ -1295,42 +1425,35 @@ def predict_date(
         )
 
         if region == "National":
-            df = load_national_data()
+            df = (
+                load_national_data()
+            )
 
         else:
-            df = load_regional_data(
-                region
+            df = (
+                load_regional_data(
+                    region
+                )
             )
 
         selected = df[
-            df["forecast_date"]
+            df[
+                "forecast_date"
+            ]
             == requested_date
         ]
 
         if selected.empty:
-            available_start = str(
-                df[
-                    "forecast_date"
-                ]
-                .min()
-                .date()
-            )
-
-            available_end = str(
-                df[
-                    "forecast_date"
-                ]
-                .max()
-                .date()
-            )
-
             raise HTTPException(
                 status_code=404,
                 detail={
                     "message":
-                        "No prediction data "
-                        "available for the "
-                        "selected date",
+                        (
+                            "No historical "
+                            "prediction data "
+                            "available for "
+                            "selected date"
+                        ),
 
                     "requested_date":
                         str(
@@ -1338,18 +1461,28 @@ def predict_date(
                         ),
 
                     "available_start":
-                        available_start,
+                        str(
+                            df[
+                                "forecast_date"
+                            ]
+                            .min()
+                            .date()
+                        ),
 
                     "available_end":
-                        available_end,
+                        str(
+                            df[
+                                "forecast_date"
+                            ]
+                            .max()
+                            .date()
+                        ),
                 },
             )
 
-        row = selected.iloc[0]
-
         return (
             build_prediction_response(
-                row,
+                selected.iloc[0],
                 region,
             )
         )
@@ -1359,7 +1492,7 @@ def predict_date(
 
     except Exception as error:
         logger.exception(
-            "Date prediction failed"
+            "Historical date prediction failed"
         )
 
         raise HTTPException(
@@ -1369,7 +1502,7 @@ def predict_date(
 
 
 # ============================================================
-# Historical Actual vs Predicted
+# History
 # ============================================================
 
 @app.get("/history")
@@ -1390,24 +1523,26 @@ def history(
         )
 
         if region == "National":
-            df = load_national_data()
-
-        else:
-            df = load_regional_data(
-                region
+            df = (
+                load_national_data()
             )
 
-        history_df = (
+        else:
+            df = (
+                load_regional_data(
+                    region
+                )
+            )
+
+        df = (
             df.tail(limit)
             .copy()
         )
 
         records = []
 
-        for _, row in (
-            history_df.iterrows()
-        ):
-            response = (
+        for _, row in df.iterrows():
+            result = (
                 build_prediction_response(
                     row,
                     region,
@@ -1420,39 +1555,40 @@ def history(
                         region,
 
                     "date":
-                        response[
+                        result[
                             "forecast_date"
                         ],
 
                     "actual_demand_mw":
-                        response[
+                        result[
                             "actual_demand_mw"
                         ],
 
                     "predicted_demand_mw":
-                        response[
+                        result[
                             "predicted_demand_mw"
                         ],
 
                     "absolute_error_mw":
-                        response[
+                        result[
                             "absolute_error_mw"
                         ],
 
                     "percentage_error":
-                        response[
+                        result[
                             "percentage_error"
                         ],
 
                     "evaluation_scope":
-                        response[
+                        result[
                             "evaluation_scope"
                         ],
                 }
             )
 
         return {
-            "region": region,
+            "region":
+                region,
 
             "count":
                 len(records),
@@ -1476,7 +1612,7 @@ def history(
 
 
 # ============================================================
-# Model Information
+# Model Info
 # ============================================================
 
 @app.get("/model/info")
@@ -1494,51 +1630,48 @@ def model_info(
             "region":
                 "National",
 
-            "strategy":
-                "ridge",
+            "anchor": {
+                "strategy":
+                    "ridge",
 
-            "model_name":
-                NATIONAL_MODEL_NAME,
+                "model_name":
+                    NATIONAL_MODEL_NAME,
 
-            "alias":
-                MODEL_ALIAS,
+                "alias":
+                    MODEL_ALIAS,
 
-            "alpha":
-                0.01,
+                "alpha":
+                    0.01,
 
-            "cv_mean_mape":
-                4.8905,
+                "cv_mean_mape":
+                    4.8905,
 
-            "holdout_mape":
-                5.68,
+                "holdout_mape":
+                    5.68,
+            },
 
-            "feature_count":
-                len(
-                    NATIONAL_FEATURE_COLUMNS
-                ),
-
-            "extended_forecast": {
+            "bridge": {
                 "enabled":
                     True,
 
-                "bridge_model_name":
-                    (
-                        "bangladesh-electricity-"
-                        "demand-bridge"
-                    ),
+                "model_name":
+                    NATIONAL_BRIDGE_MODEL_NAME,
 
-                "bridge_alias":
+                "alias":
                     MODEL_ALIAS,
+
+                "alpha":
+                    0.01,
 
                 "validated_max_horizon_days":
                     MAX_BRIDGE_HORIZON,
 
-                "bridge_backtest_mape":
+                "backtest_mape":
                     7.01,
             },
         }
 
-    strategy = (
+    anchor_strategy = (
         REGIONAL_STRATEGIES[
             region
         ]
@@ -1548,42 +1681,52 @@ def model_info(
         "region":
             region,
 
-        "strategy":
-            strategy,
+        "anchor": {
+            "strategy":
+                anchor_strategy,
 
-        "model_name":
-            REGIONAL_MODEL_NAMES.get(
-                region
-            ),
-
-        "alias":
-            (
-                MODEL_ALIAS
-                if strategy == "ridge"
-                else None
-            ),
-
-        "alpha":
-            (
-                0.01
-                if strategy == "ridge"
-                else None
-            ),
-
-        "feature_count":
-            len(
-                REGIONAL_FEATURE_COLUMNS
-            ),
-
-        "extended_forecast": {
-            "enabled":
-                False,
-
-            "reason":
+            "model_name":
                 (
-                    "Bridge Forecast is "
-                    "currently validated for "
-                    "national demand only."
+                    REGIONAL_MODEL_NAMES.get(
+                        region
+                    )
                 ),
+
+            "alias":
+                (
+                    MODEL_ALIAS
+                    if anchor_strategy
+                    == "ridge"
+                    else None
+                ),
+
+            "alpha":
+                (
+                    0.01
+                    if anchor_strategy
+                    == "ridge"
+                    else None
+                ),
+        },
+
+        "bridge": {
+            "enabled":
+                True,
+
+            "model_name":
+                (
+                    REGIONAL_BRIDGE_MODEL_NAMES[
+                        region
+                    ]
+                ),
+
+            "alias":
+                MODEL_ALIAS,
+
+            "alpha":
+                0.01,
+
+            "validated_max_horizon_days":
+                MAX_BRIDGE_HORIZON,
         },
     }
