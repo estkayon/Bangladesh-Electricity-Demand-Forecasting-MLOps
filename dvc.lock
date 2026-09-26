@@ -39,12 +39,16 @@ stages:
       hash: md5
       md5: b8e4f249c7783dbc4efd1578beedaceb
       size: 90533
+    - path: data/raw/dhaka_weather.csv
+      hash: md5
+      md5: 374686eda7a29c17b1fca2d74acd6424
+      size: 86927
     - path: src/features/build_features.py
       hash: md5
-      md5: 800679caf5d0f46b532487bb1c7d5444
-      size: 5443
+      md5: 17c662b9ae79a216fd8dacc993e2ae7f
+      size: 10287
     outs:
     - path: data/processed/model_features.csv
       hash: md5
-      md5: 4452eefd5fe3fa5a07a137ca475a94d5
-      size: 218499
+      md5: eb27935f499c62a8da8d3731fe0fca06
+      size: 286723

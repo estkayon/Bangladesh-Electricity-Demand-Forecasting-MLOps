@@ -1,0 +1,5 @@
+outs:
+- md5: 374686eda7a29c17b1fca2d74acd6424
+  size: 86927
+  hash: md5
+  path: dhaka_weather.csv

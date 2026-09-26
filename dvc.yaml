@@ -2,21 +2,24 @@ stages:
   preprocess:
     cmd: python -m src.data.preprocess
     deps:
-    - data/raw/area_wise_demand.csv
-    - src/data/preprocess.py
+      - src/data/preprocess.py
+      - data/raw/area_wise_demand.csv
     outs:
-    - data/processed/area_wise_demand_processed.csv
+      - data/processed/area_wise_demand_processed.csv
+
   build_target:
     cmd: python -m src.features.build_target
     deps:
-    - data/processed/area_wise_demand_processed.csv
-    - src/features/build_target.py
+      - src/features/build_target.py
+      - data/processed/area_wise_demand_processed.csv
     outs:
-    - data/processed/national_daily_demand.csv
+      - data/processed/national_daily_demand.csv
+
   build_features:
     cmd: python -m src.features.build_features
     deps:
-    - data/processed/national_daily_demand.csv
-    - src/features/build_features.py
+      - src/features/build_features.py
+      - data/processed/national_daily_demand.csv
+      - data/raw/dhaka_weather.csv
     outs:
-    - data/processed/model_features.csv
+      - data/processed/model_features.csv

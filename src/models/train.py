@@ -6,7 +6,10 @@ import pandas as pd
 
 from dotenv import load_dotenv
 from sklearn.ensemble import RandomForestRegressor
+from sklearn.linear_model import Ridge
 from sklearn.metrics import mean_absolute_error, mean_squared_error
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import StandardScaler
 from xgboost import XGBRegressor
 
 from src.logger import get_logger
@@ -17,7 +20,6 @@ logger = get_logger("train")
 DATA_PATH = "data/processed/model_features.csv"
 EXPERIMENT_NAME = "Bangladesh-Electricity-Demand-Forecasting"
 
-
 FEATURE_COLUMNS = [
     "total_demand",
     "total_load_shed",
@@ -25,6 +27,7 @@ FEATURE_COLUMNS = [
     "month",
     "day_of_month",
     "is_weekend",
+    "trend_days",
     "lag_1_day",
     "lag_7_day",
     "lag_14_day",
@@ -32,6 +35,13 @@ FEATURE_COLUMNS = [
     "rolling_14_day_mean",
     "rolling_30_day_mean",
     "load_shed_lag_1_day",
+    "day_of_year",
+    "is_holiday",
+    "temperature_max_c",
+    "temperature_min_c",
+    "temperature_mean_c",
+    "precipitation_mm",
+    "rain_mm",
 ]
 
 TARGET_COLUMN = "next_day_total_demand"
@@ -381,6 +391,132 @@ def run_xgboost(train, validation, test):
     )
 
 
+def run_ridge(train, validation, test):
+    logger.info("Preparing Ridge Regression experiment")
+
+    X_train = train[FEATURE_COLUMNS]
+    y_train = train[TARGET_COLUMN]
+
+    X_val = validation[FEATURE_COLUMNS]
+    y_val = validation[TARGET_COLUMN]
+
+    X_test = test[FEATURE_COLUMNS]
+    y_test = test[TARGET_COLUMN]
+
+    ridge_alpha = 0.01
+
+    logger.info("Training Ridge Regression model")
+
+    model = Pipeline(
+        steps=[
+            (
+                "scaler",
+                StandardScaler()
+            ),
+            (
+                "ridge",
+                Ridge(
+                    alpha=ridge_alpha
+                )
+            ),
+        ]
+    )
+
+    model.fit(
+        X_train,
+        y_train
+    )
+
+    logger.info(
+        "Ridge Regression training completed"
+    )
+
+    val_pred = model.predict(X_val)
+    test_pred = model.predict(X_test)
+
+    val_mae, val_rmse, val_mape = calculate_metrics(
+        y_val,
+        val_pred
+    )
+
+    test_mae, test_rmse, test_mape = calculate_metrics(
+        y_test,
+        test_pred
+    )
+
+    with mlflow.start_run(
+        run_name="ridge_v1"
+    ):
+        mlflow.log_param(
+            "model_type",
+            "Ridge"
+        )
+
+        mlflow.log_param(
+            "alpha",
+            ridge_alpha
+        )
+
+        mlflow.log_param(
+            "scaler",
+            "StandardScaler"
+        )
+
+        mlflow.log_param(
+            "feature_count",
+            len(FEATURE_COLUMNS)
+        )
+
+        mlflow.log_params(
+            {
+                "train_end": "2024-12-31",
+                "validation_period": "2025",
+                "test_start": "2026-01-01",
+            }
+        )
+
+        mlflow.log_metrics(
+            {
+                "validation_mae": val_mae,
+                "validation_rmse": val_rmse,
+                "validation_mape": val_mape,
+                "test_mae": test_mae,
+                "test_rmse": test_rmse,
+                "test_mape": test_mape,
+            }
+        )
+
+    logger.info(
+        "Ridge Validation Results"
+    )
+    logger.info(
+        f"MAE: {val_mae:.2f} MW"
+    )
+    logger.info(
+        f"RMSE: {val_rmse:.2f} MW"
+    )
+    logger.info(
+        f"MAPE: {val_mape:.2f}%"
+    )
+
+    logger.info(
+        "Ridge Test Results"
+    )
+    logger.info(
+        f"MAE: {test_mae:.2f} MW"
+    )
+    logger.info(
+        f"RMSE: {test_rmse:.2f} MW"
+    )
+    logger.info(
+        f"MAPE: {test_mape:.2f}%"
+    )
+
+    logger.info(
+        "Ridge experiment logged to MLflow"
+    )
+
+
 def main():
     setup_mlflow()
 
@@ -400,6 +536,12 @@ def main():
     )
 
     run_xgboost(
+        train,
+        validation,
+        test
+    )
+
+    run_ridge(
         train,
         validation,
         test
