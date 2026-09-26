@@ -95,6 +95,10 @@ def build_features():
         new_col="load_shed_lag_1_day"
     )
 
+    df["trend_days"] = (
+    df["Date"] - df["Date"].min()
+    ).dt.days
+
     # --------------------------------
     # Rolling Features
     # --------------------------------

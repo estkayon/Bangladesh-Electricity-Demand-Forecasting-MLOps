@@ -81,3 +81,21 @@ print(
         ]
     ].to_string(index=False)
 )
+
+print("\nDemand by split:")
+
+splits = {
+    "Train": df[df["Date"] <= "2024-12-31"],
+    "Validation": df[
+        (df["Date"] >= "2025-01-01")
+        & (df["Date"] <= "2025-12-31")
+    ],
+    "Test": df[df["Date"] >= "2026-01-01"],
+}
+
+for name, split in splits.items():
+    print(f"\n{name}")
+    print(f"Mean: {split['total_demand'].mean():.2f}")
+    print(f"Median: {split['total_demand'].median():.2f}")
+    print(f"Min: {split['total_demand'].min():.2f}")
+    print(f"Max: {split['total_demand'].max():.2f}")
