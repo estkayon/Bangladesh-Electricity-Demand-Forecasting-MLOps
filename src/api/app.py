@@ -1,5 +1,6 @@
 import os
 from datetime import date
+from pathlib import Path
 
 import mlflow
 import mlflow.sklearn
@@ -35,12 +36,18 @@ REGIONAL_INFERENCE_PATH = (
     "data/processed/regional_inference_features.csv"
 )
 
+BRIDGE_FORECAST_PATH = Path(
+    "data/processed/bridge_forecast.csv"
+)
+
 
 NATIONAL_MODEL_NAME = (
     "bangladesh-electricity-demand-ridge"
 )
 
 MODEL_ALIAS = "champion"
+
+MAX_BRIDGE_HORIZON = 8
 
 
 REGIONS = [
@@ -145,7 +152,7 @@ REGIONAL_FEATURE_COLUMNS = [
 
 
 # ============================================================
-# App
+# FastAPI App
 # ============================================================
 
 app = FastAPI(
@@ -154,10 +161,10 @@ app = FastAPI(
         "Forecasting API"
     ),
     description=(
-        "National and regional next-day "
-        "electricity demand forecasting API."
+        "National and regional next-day demand "
+        "forecasting with Anchor and Bridge forecasts."
     ),
-    version="3.0.0",
+    version="4.0.0",
 )
 
 
@@ -338,6 +345,52 @@ def load_regional_inference_data(
 
 
 # ============================================================
+# Bridge Forecast Data
+# ============================================================
+
+def load_bridge_forecast_data():
+    if not BRIDGE_FORECAST_PATH.exists():
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                "Bridge forecast file not found. "
+                "Run generate_bridge_forecast first."
+            ),
+        )
+
+    df = pd.read_csv(
+        BRIDGE_FORECAST_PATH
+    )
+
+    if df.empty:
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                "Bridge forecast dataset is empty."
+            ),
+        )
+
+    df["forecast_date"] = pd.to_datetime(
+        df["forecast_date"]
+    )
+
+    if "latest_real_bpdb_date" in df.columns:
+        df[
+            "latest_real_bpdb_date"
+        ] = pd.to_datetime(
+            df[
+                "latest_real_bpdb_date"
+            ]
+        )
+
+    return (
+        df
+        .sort_values("forecast_date")
+        .reset_index(drop=True)
+    )
+
+
+# ============================================================
 # Validation
 # ============================================================
 
@@ -459,9 +512,7 @@ def build_prediction_response(
 
     if region == "National":
         current_demand = float(
-            row[
-                "total_demand"
-            ]
+            row["total_demand"]
         )
 
         actual_demand = float(
@@ -904,7 +955,7 @@ def root():
             "Demand Forecasting API"
         ),
 
-        "version": "3.0.0",
+        "version": "4.0.0",
 
         "docs": "/docs",
     }
@@ -916,6 +967,10 @@ def root():
 
 @app.get("/health")
 def health():
+    bridge_ready = (
+        BRIDGE_FORECAST_PATH.exists()
+    )
+
     return {
         "status": "healthy",
 
@@ -933,6 +988,14 @@ def health():
 
         "live_inference":
             True,
+
+        "bridge_forecast":
+            (
+                "available"
+                if bridge_ready
+                else
+                "unavailable"
+            ),
     }
 
 
@@ -1023,6 +1086,183 @@ def predict_latest(
     except Exception as error:
         logger.exception(
             "Latest live prediction failed"
+        )
+
+        raise HTTPException(
+            status_code=500,
+            detail=str(error),
+        )
+
+
+# ============================================================
+# Extended Anchor + Bridge Forecast
+# ============================================================
+
+@app.get("/predict/extended")
+def predict_extended():
+    try:
+        df = (
+            load_bridge_forecast_data()
+        )
+
+        latest_real_date = (
+            df[
+                "latest_real_bpdb_date"
+            ]
+            .iloc[0]
+        )
+
+        forecasts = []
+
+        for _, row in df.iterrows():
+            mode = str(
+                row[
+                    "forecast_mode"
+                ]
+            )
+
+            horizon_day = int(
+                row[
+                    "horizon_day"
+                ]
+            )
+
+            if mode == "anchor":
+                display_label = (
+                    "Anchored Forecast"
+                )
+
+                confidence_note = (
+                    "Direct next-day forecast "
+                    "based on the latest real "
+                    "BPDB observation."
+                )
+
+            else:
+                display_label = (
+                    "Extended Bridge Forecast"
+                )
+
+                confidence_note = (
+                    "Recursive estimate beyond "
+                    "the latest published BPDB "
+                    "observation."
+                )
+
+            forecasts.append(
+                {
+                    "forecast_date":
+                        str(
+                            pd.Timestamp(
+                                row[
+                                    "forecast_date"
+                                ]
+                            ).date()
+                        ),
+
+                    "horizon_day":
+                        horizon_day,
+
+                    "forecast_mode":
+                        mode,
+
+                    "display_label":
+                        display_label,
+
+                    "predicted_demand_mw":
+                        round(
+                            float(
+                                row[
+                                    "predicted_demand_mw"
+                                ]
+                            ),
+                            2,
+                        ),
+
+                    "actual_demand_mw":
+                        None,
+
+                    "actual_available":
+                        False,
+
+                    "forecast_status":
+                        row[
+                            "forecast_status"
+                        ],
+
+                    "validated_horizon":
+                        bool(
+                            row[
+                                "validated_horizon"
+                            ]
+                        ),
+
+                    "model_name":
+                        row[
+                            "model_name"
+                        ],
+
+                    "model_alias":
+                        row[
+                            "model_alias"
+                        ],
+
+                    "confidence_note":
+                        confidence_note,
+                }
+            )
+
+        return {
+            "region":
+                "National",
+
+            "latest_real_bpdb_date":
+                str(
+                    latest_real_date.date()
+                ),
+
+            "validated_max_horizon_days":
+                MAX_BRIDGE_HORIZON,
+
+            "forecast_start":
+                forecasts[0][
+                    "forecast_date"
+                ],
+
+            "forecast_end":
+                forecasts[-1][
+                    "forecast_date"
+                ],
+
+            "forecast_count":
+                len(
+                    forecasts
+                ),
+
+            "actual_values_available":
+                False,
+
+            "forecast_policy": {
+                "day_1":
+                    "anchor",
+
+                "day_2_to_day_8":
+                    "bridge",
+
+                "beyond_day_8":
+                    "not_served",
+            },
+
+            "forecasts":
+                forecasts,
+        }
+
+    except HTTPException:
+        raise
+
+    except Exception as error:
+        logger.exception(
+            "Extended prediction failed"
         )
 
         raise HTTPException(
@@ -1276,6 +1516,26 @@ def model_info(
                 len(
                     NATIONAL_FEATURE_COLUMNS
                 ),
+
+            "extended_forecast": {
+                "enabled":
+                    True,
+
+                "bridge_model_name":
+                    (
+                        "bangladesh-electricity-"
+                        "demand-bridge"
+                    ),
+
+                "bridge_alias":
+                    MODEL_ALIAS,
+
+                "validated_max_horizon_days":
+                    MAX_BRIDGE_HORIZON,
+
+                "bridge_backtest_mape":
+                    7.01,
+            },
         }
 
     strategy = (
@@ -1314,4 +1574,16 @@ def model_info(
             len(
                 REGIONAL_FEATURE_COLUMNS
             ),
+
+        "extended_forecast": {
+            "enabled":
+                False,
+
+            "reason":
+                (
+                    "Bridge Forecast is "
+                    "currently validated for "
+                    "national demand only."
+                ),
+        },
     }

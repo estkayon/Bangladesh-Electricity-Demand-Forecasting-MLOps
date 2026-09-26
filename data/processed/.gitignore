@@ -5,3 +5,5 @@
 /regional_model_features.csv
 /national_inference_features.csv
 /regional_inference_features.csv
+/regional_bridge_forecast.csv
+/bridge_forecast.csv

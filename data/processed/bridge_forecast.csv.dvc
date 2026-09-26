@@ -1,0 +1,5 @@
+outs:
+- md5: 92a5bd2ad1c2820bf405a35f7e9609e5
+  size: 1195
+  hash: md5
+  path: bridge_forecast.csv
