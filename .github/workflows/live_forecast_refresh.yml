@@ -147,7 +147,6 @@ jobs:
 
           git add data/raw/area_wise_demand.csv.dvc
           git add data/raw/dhaka_weather.csv.dvc
-          git add data/raw/missing_dates.csv
           git add dvc.lock
 
           if git diff --cached --quiet; then
