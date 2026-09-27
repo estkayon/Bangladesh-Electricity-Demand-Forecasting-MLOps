@@ -38,16 +38,25 @@ jobs:
       # ======================================================
       # Install Dependencies
       # ======================================================
-
-      - name: Upgrade pip
-        run: |
-          python -m pip install --upgrade pip
-
-
+      
       - name: Install project dependencies
         run: |
           pip install -r requirements.txt
-          pip install dvc dvc-http
+          pip install \
+            pandas \
+            numpy \
+            requests \
+            beautifulsoup4 \
+            lxml \
+            holidays \
+            scikit-learn \
+            joblib \
+            python-dotenv \
+            mlflow \
+            dagshub \
+            dvc \
+            dvc-http \
+            xgboost
 
 
       # ======================================================
