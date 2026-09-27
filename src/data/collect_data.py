@@ -457,7 +457,6 @@ def fetch_date(
 # ============================================================
 # Determine Dates to Probe
 # ============================================================
-
 def determine_dates_to_probe(
     raw_df,
     missing_df,
@@ -467,20 +466,7 @@ def determine_dates_to_probe(
     dates_to_probe = set()
 
     # --------------------------------------------------------
-    # Retry all historical missing dates
-    # --------------------------------------------------------
-
-    if not missing_df.empty:
-        for missing_date in (
-            missing_df["Date"]
-        ):
-            if missing_date <= today:
-                dates_to_probe.add(
-                    missing_date.normalize()
-                )
-
-    # --------------------------------------------------------
-    # Probe forward from latest real raw date
+    # Validate raw dataset
     # --------------------------------------------------------
 
     if raw_df.empty:
@@ -495,6 +481,34 @@ def determine_dates_to_probe(
         .max()
         .normalize()
     )
+
+    # --------------------------------------------------------
+    # Retry only recent not-yet-available dates
+    # --------------------------------------------------------
+
+    if not missing_df.empty:
+        recent_missing = missing_df.copy()
+
+        if "status" in recent_missing.columns:
+            recent_missing = recent_missing[
+                recent_missing["status"]
+                == "not_yet_available"
+            ]
+
+        for missing_date in recent_missing["Date"]:
+            if (
+                pd.notna(missing_date)
+                and latest_real_date
+                < missing_date
+                <= today
+            ):
+                dates_to_probe.add(
+                    missing_date.normalize()
+                )
+
+    # --------------------------------------------------------
+    # Probe forward from latest real raw date
+    # --------------------------------------------------------
 
     next_date = (
         latest_real_date
@@ -516,7 +530,6 @@ def determine_dates_to_probe(
     return sorted(
         dates_to_probe
     )
-
 
 # ============================================================
 # Merge Raw Data
@@ -623,10 +636,16 @@ def rebuild_missing_dates(
     # beyond latest real date
     # --------------------------------------------------------
 
+    existing_missing_df["Date"] = pd.to_datetime(
+        existing_missing_df["Date"],
+        errors="coerce",
+    )
+
     previously_tracked = set(
         existing_missing_df[
             "Date"
         ]
+        .dropna()
         .dt.normalize()
     )
 
