@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
 
   schedule:
-    # Bangladesh time 9:00 AM = UTC 3:00 AM
+    # 9:00 AM Bangladesh time = 3:00 AM UTC
     - cron: "0 3 * * *"
 
 permissions:
@@ -26,7 +26,7 @@ jobs:
 
 
       # ======================================================
-      # Python
+      # Setup Python
       # ======================================================
 
       - name: Set up Python
@@ -46,31 +46,15 @@ jobs:
 
       - name: Install project dependencies
         run: |
-          if [ -f requirements.txt ]; then
-            pip install -r requirements.txt
-          else
-            pip install \
-              pandas \
-              numpy \
-              requests \
-              beautifulsoup4 \
-              lxml \
-              holidays \
-              scikit-learn \
-              joblib \
-              python-dotenv \
-              mlflow \
-              dagshub \
-              dvc \
-              dvc-http
-          fi
+          pip install -r requirements.txt
+          pip install dvc dvc-http
 
 
       # ======================================================
-      # Environment Variables
+      # MLflow Environment
       # ======================================================
 
-      - name: Configure environment
+      - name: Configure MLflow environment
         run: |
           echo "MLFLOW_TRACKING_URI=${{ secrets.MLFLOW_TRACKING_URI }}" >> $GITHUB_ENV
           echo "MLFLOW_TRACKING_USERNAME=${{ secrets.MLFLOW_TRACKING_USERNAME }}" >> $GITHUB_ENV
@@ -78,7 +62,7 @@ jobs:
 
 
       # ======================================================
-      # DVC Remote Authentication
+      # Configure DVC Authentication
       # ======================================================
 
       - name: Configure DVC remote authentication
@@ -89,7 +73,7 @@ jobs:
 
 
       # ======================================================
-      # Pull Current DVC Data
+      # Pull Existing DVC Data
       # ======================================================
 
       - name: Pull DVC data
@@ -98,7 +82,7 @@ jobs:
 
 
       # ======================================================
-      # Run Live Forecast Pipeline
+      # Run Live Forecast Refresh Pipeline
       # ======================================================
 
       - name: Refresh live forecasts
@@ -107,7 +91,7 @@ jobs:
 
 
       # ======================================================
-      # Update Raw DVC Files
+      # Update DVC Raw Data Tracking
       # ======================================================
 
       - name: Update DVC tracked raw data
@@ -126,7 +110,7 @@ jobs:
 
 
       # ======================================================
-      # Push DVC Data
+      # Push Data to DVC Remote
       # ======================================================
 
       - name: Push updated DVC data
@@ -135,10 +119,10 @@ jobs:
 
 
       # ======================================================
-      # Show Status
+      # Verify DVC
       # ======================================================
 
-      - name: Show DVC status
+      - name: Check DVC status
         run: |
           dvc status
 
@@ -147,21 +131,20 @@ jobs:
       # Commit Updated Metadata
       # ======================================================
 
-      - name: Commit refreshed data metadata
+      - name: Commit refreshed metadata
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-          git add \
-            data/raw/area_wise_demand.csv.dvc \
-            data/raw/dhaka_weather.csv.dvc \
-            dvc.lock \
-            data/raw/missing_dates.csv
+          git add data/raw/area_wise_demand.csv.dvc
+          git add data/raw/dhaka_weather.csv.dvc
+          git add data/raw/missing_dates.csv
+          git add dvc.lock
 
           if git diff --cached --quiet; then
             echo "No metadata changes to commit."
           else
-            git commit -m "chore: refresh live electricity forecast data"
+            git commit -m "chore: refresh live forecast data"
             git push origin main
           fi
 
@@ -172,9 +155,14 @@ jobs:
 
       - name: Final status
         run: |
-          echo "Git status:"
+          echo "=============================="
+          echo "Git Status"
+          echo "=============================="
           git status --short
 
           echo ""
-          echo "DVC status:"
+
+          echo "=============================="
+          echo "DVC Status"
+          echo "=============================="
           dvc status
