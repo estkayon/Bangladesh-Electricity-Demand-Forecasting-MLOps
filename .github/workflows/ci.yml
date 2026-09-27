@@ -1,0 +1,75 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Upgrade pip
+        run: |
+          python -m pip install --upgrade pip
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install \
+            pandas \
+            numpy \
+            requests \
+            beautifulsoup4 \
+            lxml \
+            holidays \
+            scikit-learn \
+            joblib \
+            python-dotenv \
+            mlflow \
+            dagshub \
+            dvc \
+            dvc-http \
+            xgboost \
+            fastapi \
+            uvicorn \
+            streamlit \
+            plotly
+
+      - name: Python syntax check
+        run: |
+          python -m compileall src dashboard.py
+
+      - name: Test core imports
+        run: |
+          python -c "import pandas, numpy, sklearn, mlflow, dvc, fastapi, streamlit, plotly"
+          python -c "from src.logger import logger"
+
+      - name: Test FastAPI application import
+        env:
+          MLFLOW_TRACKING_URI: ${{ secrets.MLFLOW_TRACKING_URI }}
+          MLFLOW_TRACKING_USERNAME: ${{ secrets.MLFLOW_TRACKING_USERNAME }}
+          MLFLOW_TRACKING_PASSWORD: ${{ secrets.MLFLOW_TRACKING_PASSWORD }}
+        run: |
+          python -c "from src.api.app import app; print('FastAPI app import successful')"
+
+      - name: Validate DVC pipeline
+        run: |
+          dvc dag
+
+      - name: CI completed
+        run: |
+          echo "All CI checks passed successfully."
