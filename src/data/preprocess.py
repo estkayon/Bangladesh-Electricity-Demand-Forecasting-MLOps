@@ -1,154 +1,728 @@
+from pathlib import Path
+
+import numpy as np
 import pandas as pd
 
 from src.logger import get_logger
 
+
 logger = get_logger("preprocess")
 
-RAW_PATH = "data/raw/area_wise_demand.csv"
-OUTPUT_PATH = "data/processed/area_wise_demand_processed.csv"
 
-df = pd.read_csv(RAW_PATH)
+# ============================================================
+# Configuration
+# ============================================================
 
-# Convert date column
-df["Date"] = pd.to_datetime(df["Date"])
-
-# Keep original rows marked as non-imputed
-df["is_imputed"] = 0
-
-# Get all zones
-zones = sorted(df["Zone Name"].unique())
-
-# Create complete date range
-full_dates = pd.date_range(
-    start="2020-01-01",
-    end="2026-09-24",
-    freq="D"
+RAW_DATA_PATH = Path(
+    "data/raw/area_wise_demand.csv"
 )
 
-# Create full Date × Zone grid
-full_index = pd.MultiIndex.from_product(
-    [full_dates, zones],
-    names=["Date", "Zone Name"]
+OUTPUT_PATH = Path(
+    "data/processed/area_wise_demand_processed.csv"
 )
 
-df = (
-    df.set_index(["Date", "Zone Name"])
-      .reindex(full_index)
-      .reset_index()
-)
 
-# Mark missing rows
-df["is_imputed"] = df["is_imputed"].fillna(1).astype(int)
-
-# Sort properly before interpolation
-df = df.sort_values(["Zone Name", "Date"])
-
-# Interpolate demand separately for each zone
-df["Demand (MW)"] = (
-    df.groupby("Zone Name")["Demand (MW)"]
-      .transform(lambda x: x.interpolate(method="linear"))
-)
-
-df["Load shed (MW)"] = df["Load shed (MW)"].fillna(0)
-
-df["is_anomaly"] = 0
-
-demand_anomalies = (
-    (df["Zone Name"] == "Mymensingh") & (df["Date"] == "2026-08-10")
-) | (
-    (df["Zone Name"] == "Comilla") & (df["Date"] == "2023-11-02")
-) | (
-    (df["Zone Name"] == "Khulna") & (df["Date"] == "2024-08-01")
-)
-
-load_shed_anomalies = (
-    (df["Zone Name"] == "Khulna") & (df["Date"] == "2023-01-06")
-)
-
-df.loc[demand_anomalies | load_shed_anomalies, "is_anomaly"] = 1
-
-logger.info("Replacing flagged anomaly values")
-
-# Demand anomalies
-demand_anomaly_mask = demand_anomalies
-
-for idx in df[demand_anomaly_mask].index:
-    zone = df.loc[idx, "Zone Name"]
-    date = df.loc[idx, "Date"]
-
-    prev_value = df[
-        (df["Zone Name"] == zone) &
-        (df["Date"] == date - pd.Timedelta(days=1))
-    ]["Demand (MW)"].values
-
-    next_value = df[
-        (df["Zone Name"] == zone) &
-        (df["Date"] == date + pd.Timedelta(days=1))
-    ]["Demand (MW)"].values
-
-    if len(prev_value) > 0 and len(next_value) > 0:
-        df.loc[idx, "Demand (MW)"] = (
-            prev_value[0] + next_value[0]
-        ) / 2
+REGIONS = [
+    "Dhaka",
+    "Chittagong",
+    "Khulna",
+    "Rajshahi",
+    "Comilla",
+    "Mymensingh",
+    "Sylhet",
+    "Barisal",
+    "Rangpur",
+]
 
 
-# Load shedding anomaly
-for idx in df[load_shed_anomalies].index:
-    zone = df.loc[idx, "Zone Name"]
-    date = df.loc[idx, "Date"]
+# ============================================================
+# Known Source Anomalies
+# ============================================================
 
-    prev_value = df[
-        (df["Zone Name"] == zone) &
-        (df["Date"] == date - pd.Timedelta(days=1))
-    ]["Load shed (MW)"].values
+DEMAND_CORRECTIONS = {
+    (
+        pd.Timestamp("2026-08-10"),
+        "Mymensingh",
+    ): 1574.5,
 
-    next_value = df[
-        (df["Zone Name"] == zone) &
-        (df["Date"] == date + pd.Timedelta(days=1))
-    ]["Load shed (MW)"].values
+    (
+        pd.Timestamp("2023-11-02"),
+        "Comilla",
+    ): 1163.5,
 
-    if len(prev_value) > 0 and len(next_value) > 0:
-        df.loc[idx, "Load shed (MW)"] = (
-            prev_value[0] + next_value[0]
-        ) / 2
+    (
+        pd.Timestamp("2024-08-01"),
+        "Khulna",
+    ): 1565.5,
+}
 
-logger.info("Anomaly replacement completed")
+
+LOAD_SHED_INTERPOLATION_FIXES = [
+    (
+        pd.Timestamp("2023-01-06"),
+        "Khulna",
+    ),
+]
 
 
-# Save processed dataset
-df.to_csv(OUTPUT_PATH, index=False)
+# ============================================================
+# Load Raw Data
+# ============================================================
 
-print(f"Processed rows: {len(df)}")
-print(f"Imputed rows: {df['is_imputed'].sum()}")
-print(f"Saved to: {OUTPUT_PATH}")
+def load_raw_data():
+    logger.info(
+        f"Loading raw BPDB data: "
+        f"{RAW_DATA_PATH}"
+    )
 
-print("\nMissing Demand values:", df["Demand (MW)"].isna().sum())
-print("Missing Load Shed values:", df["Load shed (MW)"].isna().sum())
+    if not RAW_DATA_PATH.exists():
+        raise FileNotFoundError(
+            f"Raw dataset not found: "
+            f"{RAW_DATA_PATH}"
+        )
 
-print("\nSample missing load-shed rows:")
-print(
-    df[df["Load shed (MW)"].isna()]
-    [["Date", "Zone Name", "Load shed (MW)", "is_imputed"]]
-    .head(20)
-)
+    df = pd.read_csv(
+        RAW_DATA_PATH
+    )
 
-print("\nDuplicate rows:",
-      df.duplicated(subset=["Date", "Zone Name"]).sum())
+    required_columns = {
+        "Date",
+        "Zone Name",
+        "Demand (MW)",
+        "Load shed (MW)",
+    }
 
-print("Unique zones:",
-      df["Zone Name"].nunique())
+    missing_columns = (
+        required_columns
+        - set(df.columns)
+    )
 
-print("Date range:",
-      df["Date"].min(),
-      "to",
-      df["Date"].max())
+    if missing_columns:
+        raise ValueError(
+            "Missing required columns: "
+            f"{sorted(missing_columns)}"
+        )
 
-print("Rows per date min/max:")
-print(
-    df.groupby("Date")["Zone Name"]
-      .count()
-      .agg(["min", "max"])
-)
+    df["Date"] = pd.to_datetime(
+        df["Date"],
+        errors="coerce",
+    )
 
-logger.info(f"Anomaly rows flagged: {df['is_anomaly'].sum()}")
+    df["Demand (MW)"] = pd.to_numeric(
+        df["Demand (MW)"],
+        errors="coerce",
+    ).astype(float)
 
+    df["Load shed (MW)"] = pd.to_numeric(
+        df["Load shed (MW)"],
+        errors="coerce",
+    ).astype(float)
+
+    df["is_anomaly"] = 0
+
+    df["Zone Name"] = (
+        df["Zone Name"]
+        .astype(str)
+        .str.strip()
+    )
+
+    df = df.dropna(
+        subset=[
+            "Date",
+            "Zone Name",
+        ]
+    ).copy()
+
+    df = df[
+        df["Zone Name"].isin(
+            REGIONS
+        )
+    ].copy()
+
+    logger.info(
+        f"Raw rows loaded: {len(df)}"
+    )
+
+    logger.info(
+        "Raw date range: "
+        f"{df['Date'].min().date()} "
+        "to "
+        f"{df['Date'].max().date()}"
+    )
+
+    return df
+
+
+# ============================================================
+# Remove Duplicate Region-Date Rows
+# ============================================================
+
+def remove_duplicates(df):
+    duplicate_count = (
+        df.duplicated(
+            subset=[
+                "Date",
+                "Zone Name",
+            ],
+            keep="last",
+        )
+        .sum()
+    )
+
+    if duplicate_count > 0:
+        logger.warning(
+            f"Duplicate rows found: "
+            f"{duplicate_count}"
+        )
+
+    df = (
+        df
+        .drop_duplicates(
+            subset=[
+                "Date",
+                "Zone Name",
+            ],
+            keep="last",
+        )
+        .copy()
+    )
+
+    return df
+
+
+# ============================================================
+# Known Data Corrections
+# ============================================================
+
+def apply_known_corrections(df):
+    logger.info(
+        "Applying known source corrections"
+    )
+
+    for (
+        correction_date,
+        region,
+), corrected_value in DEMAND_CORRECTIONS.items():
+
+     mask = (
+        (df["Date"] == correction_date)
+        &
+        (df["Zone Name"] == region)
+    )
+
+    if mask.any():
+        old_value = (
+            df.loc[
+                mask,
+                "Demand (MW)",
+            ]
+            .iloc[0]
+        )
+
+        df.loc[
+            mask,
+            "Demand (MW)",
+        ] = corrected_value
+
+        df.loc[
+            mask,
+            "is_anomaly",
+        ] = 1
+
+        logger.info(
+            f"Demand correction: "
+            f"{correction_date.date()} | "
+            f"{region} | "
+            f"{old_value} -> "
+            f"{corrected_value}"
+        )
+
+    for (
+        correction_date,
+        region,
+    ) in LOAD_SHED_INTERPOLATION_FIXES:
+        mask = (
+            (df["Date"] == correction_date)
+            &
+            (df["Zone Name"] == region)
+        )
+
+        if not mask.any():
+            continue
+
+        previous_date = (
+            correction_date
+            - pd.Timedelta(days=1)
+        )
+
+        next_date = (
+            correction_date
+            + pd.Timedelta(days=1)
+        )
+
+        previous_values = df.loc[
+            (
+                (df["Date"] == previous_date)
+                &
+                (df["Zone Name"] == region)
+            ),
+            "Load shed (MW)",
+        ]
+
+        next_values = df.loc[
+            (
+                (df["Date"] == next_date)
+                &
+                (df["Zone Name"] == region)
+            ),
+            "Load shed (MW)",
+        ]
+
+        if (
+            not previous_values.empty
+            and not next_values.empty
+            and pd.notna(
+                previous_values.iloc[0]
+            )
+            and pd.notna(
+                next_values.iloc[0]
+            )
+        ):
+            corrected_value = (
+                float(
+                    previous_values.iloc[0]
+                )
+                + float(
+                    next_values.iloc[0]
+                )
+            ) / 2
+
+            old_value = (
+                df.loc[
+                    mask,
+                    "Load shed (MW)",
+                ]
+                .iloc[0]
+            )
+
+            df.loc[
+                mask,
+                "Load shed (MW)",
+            ] = corrected_value
+
+            logger.info(
+                f"Load shed correction: "
+                f"{correction_date.date()} | "
+                f"{region} | "
+                f"{old_value} -> "
+                f"{corrected_value:.2f}"
+            )
+
+    return df
+
+
+# ============================================================
+# Build Complete Calendar Grid
+# ============================================================
+
+def build_complete_grid(df):
+    start_date = (
+        df["Date"].min()
+        .normalize()
+    )
+
+    # IMPORTANT:
+    # Dynamic end date.
+    # We stop at the latest date actually
+    # present in the raw BPDB dataset.
+    end_date = (
+        df["Date"].max()
+        .normalize()
+    )
+
+    logger.info(
+        "Building complete calendar grid"
+    )
+
+    logger.info(
+        f"Dynamic start date: "
+        f"{start_date.date()}"
+    )
+
+    logger.info(
+        f"Dynamic end date: "
+        f"{end_date.date()}"
+    )
+
+    all_dates = pd.date_range(
+        start=start_date,
+        end=end_date,
+        freq="D",
+    )
+
+    grid = pd.MultiIndex.from_product(
+        [
+            all_dates,
+            REGIONS,
+        ],
+        names=[
+            "Date",
+            "Zone Name",
+        ],
+    ).to_frame(
+        index=False
+    )
+
+    logger.info(
+        f"Expected complete rows: "
+        f"{len(grid)}"
+    )
+
+    merged = grid.merge(
+        df,
+        on=[
+            "Date",
+            "Zone Name",
+        ],
+        how="left",
+        indicator=True,
+    )
+
+    merged["is_imputed"] = (
+        merged["_merge"]
+        == "left_only"
+    ).astype(int)
+
+    merged = merged.drop(
+        columns=[
+            "_merge",
+        ]
+    )
+
+    logger.info(
+        "Missing region-date rows detected: "
+        f"{merged['is_imputed'].sum()}"
+    )
+
+    return merged
+
+
+# ============================================================
+# Fill Missing Demand
+# ============================================================
+
+def interpolate_demand(df):
+    logger.info(
+        "Interpolating missing demand values"
+    )
+
+    output_frames = []
+
+    for region in REGIONS:
+        region_df = (
+            df[
+                df["Zone Name"] == region
+            ]
+            .copy()
+            .sort_values("Date")
+            .reset_index(drop=True)
+        )
+
+        region_df[
+            "Demand (MW)"
+        ] = (
+            region_df[
+                "Demand (MW)"
+            ]
+            .interpolate(
+                method="linear",
+                limit_direction="both",
+            )
+        )
+
+        output_frames.append(
+            region_df
+        )
+
+    result = pd.concat(
+        output_frames,
+        ignore_index=True,
+    )
+
+    return result
+
+
+# ============================================================
+# Fill Missing Load Shed
+# ============================================================
+
+def fill_load_shed(df):
+    logger.info(
+        "Filling missing load-shed values"
+    )
+
+    df[
+        "Load shed (MW)"
+    ] = (
+        df[
+            "Load shed (MW)"
+        ]
+        .fillna(0.0)
+    )
+
+    return df
+
+
+# ============================================================
+# Validation
+# ============================================================
+
+def validate_processed_data(df):
+    logger.info(
+        "Validating processed dataset"
+    )
+
+    duplicate_count = (
+        df.duplicated(
+            subset=[
+                "Date",
+                "Zone Name",
+            ]
+        )
+        .sum()
+    )
+
+    if duplicate_count != 0:
+        raise ValueError(
+            f"Processed dataset contains "
+            f"{duplicate_count} duplicate rows"
+        )
+
+    missing_demand = (
+        df["Demand (MW)"]
+        .isna()
+        .sum()
+    )
+
+    missing_load_shed = (
+        df["Load shed (MW)"]
+        .isna()
+        .sum()
+    )
+
+    if missing_demand != 0:
+        raise ValueError(
+            f"Demand still contains "
+            f"{missing_demand} missing values"
+        )
+
+    if missing_load_shed != 0:
+        raise ValueError(
+            f"Load shed still contains "
+            f"{missing_load_shed} missing values"
+        )
+
+    region_counts = (
+        df.groupby("Date")[
+            "Zone Name"
+        ]
+        .nunique()
+    )
+
+    invalid_dates = region_counts[
+        region_counts != len(REGIONS)
+    ]
+
+    if not invalid_dates.empty:
+        raise ValueError(
+            "Some dates do not contain "
+            "all expected regions"
+        )
+
+    expected_rows = (
+        df["Date"].nunique()
+        * len(REGIONS)
+    )
+
+    if len(df) != expected_rows:
+        raise ValueError(
+            "Processed row count does not "
+            "match complete calendar grid"
+        )
+
+    if not set(
+        df["is_imputed"].unique()
+    ).issubset(
+        {0, 1}
+    ):
+        raise ValueError(
+            "Invalid is_imputed values found"
+        )
+
+    logger.info(
+        "Processed dataset validation passed"
+    )
+
+
+# ============================================================
+# Summary
+# ============================================================
+
+def print_summary(df):
+    total_rows = len(df)
+
+    total_dates = (
+        df["Date"].nunique()
+    )
+
+    total_regions = (
+        df["Zone Name"].nunique()
+    )
+
+    imputed_rows = int(
+        df["is_imputed"].sum()
+    )
+
+    imputed_dates = (
+        df.loc[
+            df["is_imputed"] == 1,
+            "Date",
+        ]
+        .nunique()
+    )
+
+    real_rows = (
+        total_rows
+        - imputed_rows
+    )
+
+    print(
+        "\nPREPROCESSING SUMMARY\n"
+    )
+
+    print(
+        f"Date range:     "
+        f"{df['Date'].min().date()} "
+        f"to "
+        f"{df['Date'].max().date()}"
+    )
+
+    print(
+        f"Total dates:    "
+        f"{total_dates}"
+    )
+
+    print(
+        f"Regions:        "
+        f"{total_regions}"
+    )
+
+    print(
+        f"Total rows:     "
+        f"{total_rows}"
+    )
+
+    print(
+        f"Real rows:      "
+        f"{real_rows}"
+    )
+
+    print(
+        f"Imputed rows:   "
+        f"{imputed_rows}"
+    )
+
+    print(
+        f"Dates affected "
+        f"by imputation: "
+        f"{imputed_dates}"
+    )
+
+    print(
+        f"Latest raw date:"
+        f" {df['Date'].max().date()}"
+    )
+
+
+# ============================================================
+# Save
+# ============================================================
+
+def save_processed_data(df):
+    OUTPUT_PATH.parent.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    df = (
+        df
+        .sort_values(
+            [
+                "Date",
+                "Zone Name",
+            ]
+        )
+        .reset_index(drop=True)
+    )
+
+    df.to_csv(
+        OUTPUT_PATH,
+        index=False,
+    )
+
+    logger.info(
+        f"Processed dataset saved: "
+        f"{OUTPUT_PATH}"
+    )
+
+
+# ============================================================
+# Main
+# ============================================================
+
+def main():
+    logger.info(
+        "Starting BPDB preprocessing"
+    )
+
+    df = load_raw_data()
+
+    df = remove_duplicates(
+        df
+    )
+
+    df = apply_known_corrections(
+        df
+    )
+
+    df = build_complete_grid(
+        df
+    )
+
+    df = interpolate_demand(
+        df
+    )
+
+    df = fill_load_shed(
+        df
+    )
+
+    validate_processed_data(
+        df
+    )
+
+    save_processed_data(
+        df
+    )
+
+    print_summary(
+        df
+    )
+
+    logger.info(
+        "BPDB preprocessing completed successfully"
+    )
+
+
+if __name__ == "__main__":
+    main()

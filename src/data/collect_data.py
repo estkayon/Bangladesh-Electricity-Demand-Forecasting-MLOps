@@ -1,11 +1,11 @@
-from datetime import datetime, timedelta
-from io import StringIO
+from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import pandas as pd
 import requests
 import urllib3
+from bs4 import BeautifulSoup
 
 from src.logger import get_logger
 
@@ -17,7 +17,9 @@ logger = get_logger("collect_data")
 # Configuration
 # ============================================================
 
-BASE_URL = "https://misc.bpdb.gov.bd/area-wise-demand"
+BASE_URL = (
+    "https://misc.bpdb.gov.bd/area-wise-demand"
+)
 
 RAW_DATA_PATH = Path(
     "data/raw/area_wise_demand.csv"
@@ -27,88 +29,62 @@ MISSING_DATES_PATH = Path(
     "data/raw/missing_dates.csv"
 )
 
-BANGLADESH_TIMEZONE = ZoneInfo(
-    "Asia/Dhaka"
-)
+TIMEZONE = "Asia/Dhaka"
 
 REQUEST_TIMEOUT = 30
 
 
-EXPECTED_COLUMNS = [
-    "Date",
-    "Zone Name",
-    "Demand (MW)",
-    "Load shed (MW)",
+REGIONS = [
+    "Dhaka",
+    "Chittagong",
+    "Khulna",
+    "Rajshahi",
+    "Comilla",
+    "Mymensingh",
+    "Sylhet",
+    "Barisal",
+    "Rangpur",
 ]
 
 
-# SSL verification previously failed for BPDB.
+# BPDB certificate currently causes
+# verification issues in some environments.
 urllib3.disable_warnings(
     urllib3.exceptions.InsecureRequestWarning
 )
 
 
 # ============================================================
-# Utilities
+# Date Helpers
 # ============================================================
 
-def get_today_bangladesh():
-    return datetime.now(
-        BANGLADESH_TIMEZONE
-    ).date()
-
-
-def normalize_column_name(column):
+def get_bangladesh_today():
     return (
-        str(column)
-        .strip()
-        .replace("\n", " ")
-        .replace("\r", " ")
+        pd.Timestamp.now(
+            tz=ZoneInfo(TIMEZONE)
+        )
+        .normalize()
+        .tz_localize(None)
     )
 
 
-def normalize_table_columns(df):
-    df.columns = [
-        normalize_column_name(column)
-        for column in df.columns
-    ]
+# ============================================================
+# Existing Raw Data
+# ============================================================
 
-    rename_map = {}
-
-    for column in df.columns:
-        lower = column.lower()
-
-        if (
-            "zone" in lower
-            and "name" in lower
-        ):
-            rename_map[column] = "Zone Name"
-
-        elif (
-            "demand" in lower
-            and "load" not in lower
-        ):
-            rename_map[column] = "Demand (MW)"
-
-        elif (
-            "load" in lower
-            and "shed" in lower
-        ):
-            rename_map[column] = "Load shed (MW)"
-
-    return df.rename(
-        columns=rename_map
-    )
-
-
-def load_existing_data():
+def load_existing_raw_data():
     if not RAW_DATA_PATH.exists():
         logger.info(
-            "Raw dataset does not exist yet"
+            "No existing raw BPDB dataset found"
         )
 
         return pd.DataFrame(
-            columns=EXPECTED_COLUMNS
+            columns=[
+                "Date",
+                "Zone Name",
+                "Demand (MW)",
+                "Load shed (MW)",
+            ]
         )
 
     logger.info(
@@ -120,9 +96,22 @@ def load_existing_data():
         RAW_DATA_PATH
     )
 
-    if df.empty:
-        return pd.DataFrame(
-            columns=EXPECTED_COLUMNS
+    required_columns = {
+        "Date",
+        "Zone Name",
+        "Demand (MW)",
+        "Load shed (MW)",
+    }
+
+    missing_columns = (
+        required_columns
+        - set(df.columns)
+    )
+
+    if missing_columns:
+        raise ValueError(
+            "Raw dataset missing columns: "
+            f"{sorted(missing_columns)}"
         )
 
     df["Date"] = pd.to_datetime(
@@ -130,390 +119,38 @@ def load_existing_data():
         errors="coerce",
     )
 
-    df = df.dropna(
-        subset=["Date"]
-    )
-
-    logger.info(
-        f"Existing raw rows: {len(df)}"
-    )
-
-    logger.info(
-        "Existing date range: "
-        f"{df['Date'].min().date()} "
-        "to "
-        f"{df['Date'].max().date()}"
-    )
-
-    return df
-
-
-# ============================================================
-# BPDB Scraping
-# ============================================================
-
-def fetch_date_data(target_date):
-    formatted_date = target_date.strftime(
-        "%d-%m-%Y"
-    )
-
-    logger.info(
-        f"Fetching BPDB data for "
-        f"{target_date}"
-    )
-
-    try:
-        response = requests.get(
-            BASE_URL,
-            params={
-                "date": formatted_date
-            },
-            timeout=REQUEST_TIMEOUT,
-            verify=False,
-        )
-
-        response.raise_for_status()
-
-    except requests.RequestException as error:
-        logger.warning(
-            f"Request failed for "
-            f"{target_date}: {error}"
-        )
-
-        return None
-
-    try:
-        tables = pd.read_html(
-            StringIO(
-                response.text
-            )
-        )
-
-    except ValueError:
-        logger.warning(
-            f"No HTML tables found for "
-            f"{target_date}"
-        )
-
-        return None
-
-    except Exception as error:
-        logger.warning(
-            f"Could not parse tables for "
-            f"{target_date}: {error}"
-        )
-
-        return None
-
-    demand_table = None
-
-    for table in tables:
-        table = normalize_table_columns(
-            table
-        )
-
-        required = {
-            "Zone Name",
-            "Demand (MW)",
-            "Load shed (MW)",
-        }
-
-        if required.issubset(
-            table.columns
-        ):
-            demand_table = table.copy()
-            break
-
-    if demand_table is None:
-        logger.warning(
-            f"Demand table not found for "
-            f"{target_date}"
-        )
-
-        return None
-
-    demand_table = demand_table[
-        [
-            "Zone Name",
-            "Demand (MW)",
-            "Load shed (MW)",
-        ]
-    ].copy()
-
-    # --------------------------------------------------------
-    # Clean zone names
-    # --------------------------------------------------------
-
-    demand_table[
-        "Zone Name"
-    ] = (
-        demand_table[
-            "Zone Name"
-        ]
+    df["Zone Name"] = (
+        df["Zone Name"]
         .astype(str)
         .str.strip()
     )
 
-    # Remove total/footer/invalid rows
-    demand_table = demand_table[
-        ~demand_table[
-            "Zone Name"
-        ]
-        .str.lower()
-        .isin(
-            [
-                "total",
-                "nan",
-                "",
-            ]
-        )
-    ].copy()
+    df["Demand (MW)"] = pd.to_numeric(
+        df["Demand (MW)"],
+        errors="coerce",
+    )
 
-    # --------------------------------------------------------
-    # Numeric conversion
-    # --------------------------------------------------------
+    df["Load shed (MW)"] = pd.to_numeric(
+        df["Load shed (MW)"],
+        errors="coerce",
+    )
 
-    for column in [
-        "Demand (MW)",
-        "Load shed (MW)",
-    ]:
-        demand_table[column] = (
-            demand_table[column]
-            .astype(str)
-            .str.replace(
-                ",",
-                "",
-                regex=False,
-            )
-            .str.strip()
-        )
-
-        demand_table[column] = (
-            pd.to_numeric(
-                demand_table[column],
-                errors="coerce",
-            )
-        )
-
-    demand_table = demand_table.dropna(
+    df = df.dropna(
         subset=[
+            "Date",
             "Zone Name",
             "Demand (MW)",
         ]
-    )
+    ).copy()
 
-    # If load shed is missing in a valid row,
-    # treat it as zero.
-    demand_table[
-        "Load shed (MW)"
-    ] = (
-        demand_table[
-            "Load shed (MW)"
-        ]
-        .fillna(0)
-    )
-
-    # --------------------------------------------------------
-    # Basic validation
-    # --------------------------------------------------------
-
-    expected_region_count = 9
-
-    if (
-        demand_table[
-            "Zone Name"
-        ]
-        .nunique()
-        != expected_region_count
-    ):
-        logger.warning(
-            f"Unexpected region count for "
-            f"{target_date}: "
-            f"{demand_table['Zone Name'].nunique()}"
+    df = df[
+        df["Zone Name"].isin(
+            REGIONS
         )
+    ].copy()
 
-        return None
-
-    if (
-        demand_table[
-            "Demand (MW)"
-        ]
-        <= 0
-    ).any():
-        logger.warning(
-            f"Invalid demand values found for "
-            f"{target_date}"
-        )
-
-        return None
-
-    demand_table.insert(
-        0,
-        "Date",
-        pd.Timestamp(
-            target_date
-        ),
-    )
-
-    logger.info(
-        f"Valid BPDB data found for "
-        f"{target_date}: "
-        f"{len(demand_table)} rows"
-    )
-
-    return demand_table
-
-
-# ============================================================
-# Missing-Date Tracking
-# ============================================================
-
-def load_missing_dates():
-    if not MISSING_DATES_PATH.exists():
-        return set()
-
-    try:
-        missing_df = pd.read_csv(
-            MISSING_DATES_PATH
-        )
-
-        if (
-            "Date"
-            not in missing_df.columns
-        ):
-            return set()
-
-        dates = pd.to_datetime(
-            missing_df["Date"],
-            errors="coerce",
-        ).dropna()
-
-        return {
-            timestamp.date()
-            for timestamp in dates
-        }
-
-    except Exception:
-        return set()
-
-
-def save_missing_dates(
-    missing_dates,
-):
-    missing_dates = sorted(
-        set(missing_dates)
-    )
-
-    missing_df = pd.DataFrame(
-        {
-            "Date": [
-                date_value.isoformat()
-                for date_value
-                in missing_dates
-            ]
-        }
-    )
-
-    MISSING_DATES_PATH.parent.mkdir(
-        parents=True,
-        exist_ok=True,
-    )
-
-    missing_df.to_csv(
-        MISSING_DATES_PATH,
-        index=False,
-    )
-
-    logger.info(
-        f"Missing dates saved: "
-        f"{len(missing_df)}"
-    )
-
-
-# ============================================================
-# Incremental Refresh
-# ============================================================
-
-def build_dates_to_fetch(
-    existing_df,
-):
-    today = get_today_bangladesh()
-
-    if existing_df.empty:
-        raise ValueError(
-            "Existing raw dataset is empty. "
-            "Use the historical collection "
-            "workflow for the initial dataset."
-        )
-
-    latest_existing_date = (
-        existing_df[
-            "Date"
-        ]
-        .max()
-        .date()
-    )
-
-    start_date = (
-        latest_existing_date
-        + timedelta(days=1)
-    )
-
-    logger.info(
-        f"Latest real raw date: "
-        f"{latest_existing_date}"
-    )
-
-    logger.info(
-        f"Bangladesh current date: "
-        f"{today}"
-    )
-
-    if start_date > today:
-        return []
-
-    dates = []
-
-    current_date = start_date
-
-    while current_date <= today:
-        dates.append(
-            current_date
-        )
-
-        current_date += timedelta(
-            days=1
-        )
-
-    return dates
-
-
-def merge_new_data(
-    existing_df,
-    new_frames,
-):
-    if not new_frames:
-        return existing_df.copy()
-
-    new_df = pd.concat(
-        new_frames,
-        ignore_index=True,
-    )
-
-    combined = pd.concat(
-        [
-            existing_df,
-            new_df,
-        ],
-        ignore_index=True,
-    )
-
-    combined["Date"] = pd.to_datetime(
-        combined["Date"]
-    )
-
-    combined = (
-        combined
+    df = (
+        df
         .drop_duplicates(
             subset=[
                 "Date",
@@ -530,7 +167,747 @@ def merge_new_data(
         .reset_index(drop=True)
     )
 
-    return combined
+    logger.info(
+        f"Existing raw rows: "
+        f"{len(df)}"
+    )
+
+    if not df.empty:
+        logger.info(
+            "Existing raw range: "
+            f"{df['Date'].min().date()} "
+            "to "
+            f"{df['Date'].max().date()}"
+        )
+
+    return df
+
+
+# ============================================================
+# Existing Missing-Date Tracking
+# ============================================================
+
+def load_existing_missing_dates():
+    if not MISSING_DATES_PATH.exists():
+        logger.info(
+            "No existing missing-date file found"
+        )
+
+        return pd.DataFrame(
+            columns=[
+                "Date",
+                "status",
+            ]
+        )
+
+    logger.info(
+        f"Loading existing missing dates: "
+        f"{MISSING_DATES_PATH}"
+    )
+
+    df = pd.read_csv(
+        MISSING_DATES_PATH
+    )
+
+    if "Date" not in df.columns:
+        raise ValueError(
+            "missing_dates.csv must "
+            "contain a Date column"
+        )
+
+    df["Date"] = pd.to_datetime(
+        df["Date"],
+        errors="coerce",
+    )
+
+    df = df.dropna(
+        subset=["Date"]
+    ).copy()
+
+    if "status" not in df.columns:
+        df["status"] = "missing"
+
+    df = (
+        df
+        .drop_duplicates(
+            subset=["Date"],
+            keep="last",
+        )
+        .sort_values("Date")
+        .reset_index(drop=True)
+    )
+
+    logger.info(
+        f"Existing tracked missing dates: "
+        f"{len(df)}"
+    )
+
+    return df
+
+
+# ============================================================
+# HTML Parsing
+# ============================================================
+
+def clean_numeric_value(value):
+    if value is None:
+        return None
+
+    value = (
+        str(value)
+        .replace(",", "")
+        .strip()
+    )
+
+    if value == "":
+        return None
+
+    try:
+        return float(value)
+
+    except ValueError:
+        return None
+
+
+def parse_bpdb_table(
+    html,
+    requested_date,
+):
+    soup = BeautifulSoup(
+        html,
+        "html.parser",
+    )
+
+    tables = soup.find_all(
+        "table"
+    )
+
+    if not tables:
+        return None
+
+    valid_rows = []
+
+    for table in tables:
+        rows = table.find_all(
+            "tr"
+        )
+
+        for row in rows:
+            cells = [
+                cell.get_text(
+                    " ",
+                    strip=True,
+                )
+                for cell in row.find_all(
+                    [
+                        "td",
+                        "th",
+                    ]
+                )
+            ]
+
+            if len(cells) < 3:
+                continue
+
+            zone_name = cells[0].strip()
+
+            if zone_name not in REGIONS:
+                continue
+
+            demand_value = (
+                clean_numeric_value(
+                    cells[1]
+                )
+            )
+
+            load_shed_value = (
+                clean_numeric_value(
+                    cells[2]
+                )
+            )
+
+            if demand_value is None:
+                continue
+
+            if load_shed_value is None:
+                load_shed_value = 0.0
+
+            valid_rows.append(
+                {
+                    "Date":
+                        requested_date,
+
+                    "Zone Name":
+                        zone_name,
+
+                    "Demand (MW)":
+                        demand_value,
+
+                    "Load shed (MW)":
+                        load_shed_value,
+                }
+            )
+
+    if not valid_rows:
+        return None
+
+    result_df = pd.DataFrame(
+        valid_rows
+    )
+
+    result_df = (
+        result_df
+        .drop_duplicates(
+            subset=[
+                "Date",
+                "Zone Name",
+            ],
+            keep="last",
+        )
+        .reset_index(drop=True)
+    )
+
+    found_regions = set(
+        result_df[
+            "Zone Name"
+        ]
+    )
+
+    expected_regions = set(
+        REGIONS
+    )
+
+    if found_regions != expected_regions:
+        logger.warning(
+            f"{requested_date.date()} "
+            "did not contain all 9 regions. "
+            f"Found: {sorted(found_regions)}"
+        )
+
+        return None
+
+    return result_df
+
+
+# ============================================================
+# Fetch One Date
+# ============================================================
+
+def fetch_date(
+    target_date,
+):
+    date_text = (
+        target_date.strftime(
+            "%d-%m-%Y"
+        )
+    )
+
+    logger.info(
+        f"Fetching BPDB data: "
+        f"{date_text}"
+    )
+
+    try:
+        response = requests.get(
+            BASE_URL,
+            params={
+                "date":
+                    date_text
+            },
+            timeout=REQUEST_TIMEOUT,
+            verify=False,
+        )
+
+        response.raise_for_status()
+
+        parsed_df = (
+            parse_bpdb_table(
+                response.text,
+                target_date,
+            )
+        )
+
+        if (
+            parsed_df is None
+            or parsed_df.empty
+        ):
+            logger.warning(
+                f"No valid demand table: "
+                f"{date_text}"
+            )
+
+            return None
+
+        logger.info(
+            f"Valid BPDB data found: "
+            f"{date_text}"
+        )
+
+        return parsed_df
+
+    except requests.RequestException as error:
+        logger.warning(
+            f"Request failed for "
+            f"{date_text}: {error}"
+        )
+
+        return None
+
+
+# ============================================================
+# Determine Dates to Probe
+# ============================================================
+
+def determine_dates_to_probe(
+    raw_df,
+    missing_df,
+):
+    today = get_bangladesh_today()
+
+    dates_to_probe = set()
+
+    # --------------------------------------------------------
+    # Retry all historical missing dates
+    # --------------------------------------------------------
+
+    if not missing_df.empty:
+        for missing_date in (
+            missing_df["Date"]
+        ):
+            if missing_date <= today:
+                dates_to_probe.add(
+                    missing_date.normalize()
+                )
+
+    # --------------------------------------------------------
+    # Probe forward from latest real raw date
+    # --------------------------------------------------------
+
+    if raw_df.empty:
+        raise ValueError(
+            "Raw dataset is empty. "
+            "Initial full historical "
+            "collection is required."
+        )
+
+    latest_real_date = (
+        raw_df["Date"]
+        .max()
+        .normalize()
+    )
+
+    next_date = (
+        latest_real_date
+        + pd.Timedelta(days=1)
+    )
+
+    if next_date <= today:
+        forward_dates = pd.date_range(
+            start=next_date,
+            end=today,
+            freq="D",
+        )
+
+        for target_date in forward_dates:
+            dates_to_probe.add(
+                target_date.normalize()
+            )
+
+    return sorted(
+        dates_to_probe
+    )
+
+
+# ============================================================
+# Merge Raw Data
+# ============================================================
+
+def merge_raw_data(
+    existing_df,
+    new_frames,
+):
+    frames = [
+        existing_df
+    ]
+
+    frames.extend(
+        new_frames
+    )
+
+    combined_df = pd.concat(
+        frames,
+        ignore_index=True,
+    )
+
+    combined_df["Date"] = (
+        pd.to_datetime(
+            combined_df["Date"]
+        )
+    )
+
+    combined_df = (
+        combined_df
+        .drop_duplicates(
+            subset=[
+                "Date",
+                "Zone Name",
+            ],
+            keep="last",
+        )
+        .sort_values(
+            [
+                "Date",
+                "Zone Name",
+            ]
+        )
+        .reset_index(drop=True)
+    )
+
+    return combined_df
+
+
+# ============================================================
+# Rebuild Missing-Date List
+# ============================================================
+
+def rebuild_missing_dates(
+    raw_df,
+    existing_missing_df,
+    probed_dates,
+):
+    # --------------------------------------------------------
+    # Historical calendar gaps from first raw date
+    # through latest real raw date
+    # --------------------------------------------------------
+
+    raw_dates = set(
+        raw_df[
+            "Date"
+        ]
+        .dt.normalize()
+        .unique()
+    )
+
+    first_raw_date = (
+        raw_df[
+            "Date"
+        ]
+        .min()
+        .normalize()
+    )
+
+    latest_real_date = (
+        raw_df[
+            "Date"
+        ]
+        .max()
+        .normalize()
+    )
+
+    complete_calendar = pd.date_range(
+        start=first_raw_date,
+        end=latest_real_date,
+        freq="D",
+    )
+
+    historical_missing = {
+        target_date
+        for target_date
+        in complete_calendar
+        if target_date
+        not in raw_dates
+    }
+
+    # --------------------------------------------------------
+    # Preserve current recent unavailable dates
+    # beyond latest real date
+    # --------------------------------------------------------
+
+    previously_tracked = set(
+        existing_missing_df[
+            "Date"
+        ]
+        .dt.normalize()
+    )
+
+    probed_set = set(
+        pd.Timestamp(date_value)
+        .normalize()
+        for date_value
+        in probed_dates
+    )
+
+    # Any probed date which still has
+    # no raw data remains unavailable.
+    still_unavailable = {
+        target_date
+        for target_date
+        in probed_set
+        if target_date
+        not in raw_dates
+    }
+
+    # Preserve tracked future/recent unavailable
+    # dates unless they are now available.
+    preserved_unavailable = {
+        target_date
+        for target_date
+        in previously_tracked
+        if target_date
+        not in raw_dates
+    }
+
+    all_missing_dates = (
+        historical_missing
+        | still_unavailable
+        | preserved_unavailable
+    )
+
+    rows = []
+
+    for target_date in sorted(
+        all_missing_dates
+    ):
+        if target_date <= latest_real_date:
+            status = (
+                "historical_missing"
+            )
+
+        else:
+            status = (
+                "not_yet_available"
+            )
+
+        rows.append(
+            {
+                "Date":
+                    target_date,
+
+                "status":
+                    status,
+            }
+        )
+
+    return pd.DataFrame(
+        rows
+    )
+
+
+# ============================================================
+# Validation
+# ============================================================
+
+def validate_raw_data(
+    df,
+):
+    duplicate_count = (
+        df.duplicated(
+            subset=[
+                "Date",
+                "Zone Name",
+            ]
+        )
+        .sum()
+    )
+
+    if duplicate_count != 0:
+        raise ValueError(
+            f"Raw dataset contains "
+            f"{duplicate_count} duplicate rows"
+        )
+
+    invalid_regions = set(
+        df["Zone Name"].unique()
+    ) - set(REGIONS)
+
+    if invalid_regions:
+        raise ValueError(
+            "Unexpected regions found: "
+            f"{sorted(invalid_regions)}"
+        )
+
+    per_date_count = (
+        df.groupby("Date")[
+            "Zone Name"
+        ]
+        .nunique()
+    )
+
+    invalid_dates = (
+        per_date_count[
+            per_date_count
+            != len(REGIONS)
+        ]
+    )
+
+    if not invalid_dates.empty:
+        raise ValueError(
+            "Some stored BPDB dates "
+            "do not contain all 9 regions"
+        )
+
+
+# ============================================================
+# Save
+# ============================================================
+
+def save_raw_data(
+    df,
+):
+    RAW_DATA_PATH.parent.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    output_df = df.copy()
+
+    output_df["Date"] = (
+        output_df["Date"]
+        .dt.strftime(
+            "%Y-%m-%d"
+        )
+    )
+
+    output_df.to_csv(
+        RAW_DATA_PATH,
+        index=False,
+    )
+
+    logger.info(
+        f"Raw dataset saved: "
+        f"{RAW_DATA_PATH}"
+    )
+
+
+def save_missing_dates(
+    df,
+):
+    MISSING_DATES_PATH.parent.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    if df.empty:
+        empty_df = pd.DataFrame(
+            columns=[
+                "Date",
+                "status",
+            ]
+        )
+
+        empty_df.to_csv(
+            MISSING_DATES_PATH,
+            index=False,
+        )
+
+        logger.info(
+            "No missing dates remain"
+        )
+
+        return
+
+    output_df = df.copy()
+
+    output_df["Date"] = (
+        output_df["Date"]
+        .dt.strftime(
+            "%Y-%m-%d"
+        )
+    )
+
+    output_df.to_csv(
+        MISSING_DATES_PATH,
+        index=False,
+    )
+
+    logger.info(
+        f"Missing dates saved: "
+        f"{len(output_df)}"
+    )
+
+
+# ============================================================
+# Summary
+# ============================================================
+
+def print_summary(
+    raw_df,
+    missing_df,
+    dates_to_probe,
+    successful_dates,
+):
+    latest_real_date = (
+        raw_df[
+            "Date"
+        ]
+        .max()
+    )
+
+    historical_missing = (
+        missing_df[
+            missing_df[
+                "status"
+            ]
+            == "historical_missing"
+        ]
+        if not missing_df.empty
+        else pd.DataFrame()
+    )
+
+    unavailable_dates = (
+        missing_df[
+            missing_df[
+                "status"
+            ]
+            == "not_yet_available"
+        ]
+        if not missing_df.empty
+        else pd.DataFrame()
+    )
+
+    print(
+        "\nBPDB COLLECTION SUMMARY\n"
+    )
+
+    print(
+        f"Dates probed:              "
+        f"{len(dates_to_probe)}"
+    )
+
+    print(
+        f"New/recovered dates found: "
+        f"{len(successful_dates)}"
+    )
+
+    print(
+        f"Raw rows:                  "
+        f"{len(raw_df)}"
+    )
+
+    print(
+        f"Real BPDB dates:            "
+        f"{raw_df['Date'].nunique()}"
+    )
+
+    print(
+        f"Latest real BPDB date:      "
+        f"{latest_real_date.date()}"
+    )
+
+    print(
+        f"Historical missing dates:   "
+        f"{len(historical_missing)}"
+    )
+
+    print(
+        f"Not-yet-available dates:    "
+        f"{len(unavailable_dates)}"
+    )
+
+    print(
+        f"Total tracked missing:      "
+        f"{len(missing_df)}"
+    )
 
 
 # ============================================================
@@ -539,208 +916,98 @@ def merge_new_data(
 
 def main():
     logger.info(
-        "Starting incremental BPDB "
-        "data refresh"
+        "Starting incremental BPDB collection"
     )
 
-    RAW_DATA_PATH.parent.mkdir(
-        parents=True,
-        exist_ok=True,
+    raw_df = (
+        load_existing_raw_data()
     )
 
-    existing_df = load_existing_data()
-
-    dates_to_fetch = (
-        build_dates_to_fetch(
-            existing_df
-        )
+    missing_df = (
+        load_existing_missing_dates()
     )
 
-    if not dates_to_fetch:
-        logger.info(
-            "No new dates need to be fetched"
+    dates_to_probe = (
+        determine_dates_to_probe(
+            raw_df,
+            missing_df,
         )
-
-        print(
-            "\nBPDB DATA REFRESH STATUS\n"
-        )
-
-        print(
-            "No new calendar dates "
-            "need to be checked."
-        )
-
-        return
-
-    logger.info(
-        f"Dates to check: "
-        f"{len(dates_to_fetch)}"
     )
 
     logger.info(
-        "Refresh range: "
-        f"{dates_to_fetch[0]} "
-        "to "
-        f"{dates_to_fetch[-1]}"
+        f"Dates to probe: "
+        f"{len(dates_to_probe)}"
     )
 
-    existing_missing = (
-        load_missing_dates()
-    )
-
-    successful_frames = []
-
-    newly_missing = []
-
+    new_frames = []
     successful_dates = []
 
-    # --------------------------------------------------------
-    # Fetch dates one by one
-    # --------------------------------------------------------
-
-    for target_date in dates_to_fetch:
-        date_df = fetch_date_data(
-            target_date
-        )
-
-        if date_df is None:
-            newly_missing.append(
+    for target_date in dates_to_probe:
+        fetched_df = (
+            fetch_date(
                 target_date
             )
+        )
 
+        if fetched_df is None:
             continue
 
-        successful_frames.append(
-            date_df
+        new_frames.append(
+            fetched_df
         )
 
         successful_dates.append(
             target_date
         )
 
-        # If previously marked missing,
-        # remove it after successful fetch.
-        existing_missing.discard(
-            target_date
+    updated_raw_df = (
+        merge_raw_data(
+            raw_df,
+            new_frames,
         )
-
-    # --------------------------------------------------------
-    # Merge and save raw dataset
-    # --------------------------------------------------------
-
-    combined_df = merge_new_data(
-        existing_df,
-        successful_frames,
     )
 
-    combined_df.to_csv(
-        RAW_DATA_PATH,
-        index=False,
-        date_format="%Y-%m-%d",
+    validate_raw_data(
+        updated_raw_df
     )
 
-    # --------------------------------------------------------
-    # Missing dates
-    # --------------------------------------------------------
+    updated_missing_df = (
+        rebuild_missing_dates(
+            raw_df=
+                updated_raw_df,
 
-    updated_missing = (
-        existing_missing
-        .union(
-            set(newly_missing)
+            existing_missing_df=
+                missing_df,
+
+            probed_dates=
+                dates_to_probe,
         )
+    )
+
+    save_raw_data(
+        updated_raw_df
     )
 
     save_missing_dates(
-        updated_missing
+        updated_missing_df
     )
 
-    # --------------------------------------------------------
-    # Summary
-    # --------------------------------------------------------
+    print_summary(
+        raw_df=
+            updated_raw_df,
 
-    previous_rows = len(
-        existing_df
+        missing_df=
+            updated_missing_df,
+
+        dates_to_probe=
+            dates_to_probe,
+
+        successful_dates=
+            successful_dates,
     )
-
-    current_rows = len(
-        combined_df
-    )
-
-    added_rows = (
-        current_rows
-        - previous_rows
-    )
-
-    print(
-        "\nBPDB DATA REFRESH STATUS\n"
-    )
-
-    print(
-        "Previous raw rows:",
-        previous_rows,
-    )
-
-    print(
-        "Current raw rows:",
-        current_rows,
-    )
-
-    print(
-        "New rows added:",
-        added_rows,
-    )
-
-    print(
-        "Dates checked:",
-        len(dates_to_fetch),
-    )
-
-    print(
-        "Successful dates:",
-        len(successful_dates),
-    )
-
-    print(
-        "Unavailable dates:",
-        len(newly_missing),
-    )
-
-    if successful_dates:
-        print(
-            "Newest real BPDB date:",
-            max(
-                successful_dates
-            ),
-        )
-
-    else:
-        latest_existing = (
-            combined_df[
-                "Date"
-            ]
-            .max()
-            .date()
-        )
-
-        print(
-            "Newest real BPDB date:",
-            latest_existing,
-        )
-
-    if newly_missing:
-        print(
-            "\nUnavailable dates:"
-        )
-
-        for missing_date in (
-            newly_missing
-        ):
-            print(
-                f"  {missing_date}"
-            )
 
     logger.info(
-        "Incremental BPDB data refresh "
+        "Incremental BPDB collection "
         "completed successfully"
     )
 
