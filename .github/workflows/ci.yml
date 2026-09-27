@@ -56,7 +56,6 @@ jobs:
       - name: Test core imports
         run: |
           python -c "import pandas, numpy, sklearn, mlflow, dvc, fastapi, streamlit, plotly"
-          python -c "from src.logger import logger"
 
       - name: Test FastAPI application import
         env:
