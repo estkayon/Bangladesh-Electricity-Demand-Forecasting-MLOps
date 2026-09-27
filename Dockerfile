@@ -33,11 +33,10 @@ RUN python -m pip install --no-cache-dir --upgrade pip && \
 
 COPY . .
 
+# Render Docker image does not contain .git.
+# Tell DVC to operate without Git/SCM.
+RUN dvc config core.no_scm true
+
 EXPOSE 8000
 
-# CMD ["sh", "-c", "python -m uvicorn src.api.app:app --host 0.0.0.0 --port ${PORT:-8000}"]
-# CMD ["sh", "-c", "dvc pull -r origin && python -m uvicorn src.api.app:app --host 0.0.0.0 --port ${PORT:-8000}"]
-# CMD ["sh", "-c", "dvc remote modify origin --local auth basic && dvc remote modify origin --local user \"$DAGSHUB_USERNAME\" && dvc remote modify origin --local password \"$DAGSHUB_TOKEN\" && dvc pull -r origin && python -m uvicorn src.api.app:app --host 0.0.0.0 --port ${PORT:-8000}"]
-# CMD ["sh", "-c", "dvc remote modify origin --local auth basic && dvc remote modify origin --local user \"$DAGSHUB_USERNAME\" && dvc remote modify origin --local password \"$DAGSHUB_TOKEN\" && echo '=== STARTING DVC PULL ===' && dvc pull -r origin -v && echo '=== DVC PULL COMPLETE ===' && echo '=== PROCESSED FILES ===' && ls -lah data/processed/ && python -m uvicorn src.api.app:app --host 0.0.0.0 --port ${PORT:-8000}"]
-CMD ["sh", "-c", "dvc config core.no_scm true --local && dvc remote modify origin --local auth basic && dvc remote modify origin --local user \"$DAGSHUB_USERNAME\" && dvc remote modify origin --local password \"$DAGSHUB_TOKEN\" && dvc pull -r origin && python -m uvicorn src.api.app:app --host 0.0.0.0 --port ${PORT:-8000}"]
-# CMD ["sh", "-c", "python -m uvicorn src.api.app:app --host 0.0.0.0 --port ${PORT:-8000}"]
+CMD ["sh", "-c", "dvc remote modify origin --local auth basic && dvc remote modify origin --local user \"$DAGSHUB_USERNAME\" && dvc remote modify origin --local password \"$DAGSHUB_TOKEN\" && echo '=== DVC PULL START ===' && dvc pull -r origin && echo '=== DVC PULL COMPLETE ===' && ls -lah data/processed/ && python -m uvicorn src.api.app:app --host 0.0.0.0 --port ${PORT:-8000}"]
