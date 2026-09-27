@@ -309,21 +309,31 @@ def parse_bpdb_table(
             if len(cells) < 3:
                 continue
 
-            zone_name = cells[0].strip()
+            # Support both old and new BPDB table structures:
+            # Old: Zone | Demand | Load shed
+            # New: Sl | Zone | Demand | Load shed
+
+            if (
+                len(cells) >= 4
+                and cells[0].strip().isdigit()
+            ):
+                zone_name = cells[1].strip()
+                demand_text = cells[2]
+                load_shed_text = cells[3]
+            else:
+                zone_name = cells[0].strip()
+                demand_text = cells[1]
+                load_shed_text = cells[2]
 
             if zone_name not in REGIONS:
                 continue
 
-            demand_value = (
-                clean_numeric_value(
-                    cells[1]
-                )
+            demand_value = clean_numeric_value(
+                demand_text
             )
 
-            load_shed_value = (
-                clean_numeric_value(
-                    cells[2]
-                )
+            load_shed_value = clean_numeric_value(
+                load_shed_text
             )
 
             if demand_value is None:

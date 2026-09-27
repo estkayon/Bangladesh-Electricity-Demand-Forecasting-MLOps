@@ -107,6 +107,8 @@ jobs:
         run: |
           dvc add data/raw/area_wise_demand.csv
           dvc add data/raw/dhaka_weather.csv
+          dvc add data/processed/bridge_forecast.csv
+          dvc add data/processed/regional_bridge_forecast.csv
 
 
       # ======================================================
