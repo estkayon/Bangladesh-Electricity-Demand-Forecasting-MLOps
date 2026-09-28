@@ -7,22 +7,97 @@ from src.logger import get_logger
 logger = get_logger("build_features")
 
 INPUT_PATH = "data/processed/national_daily_demand.csv"
+CONTEXT_PATH = "data/processed/area_wise_demand_processed.csv"
 WEATHER_PATH = "data/raw/dhaka_weather.csv"
 OUTPUT_PATH = "data/processed/model_features.csv"
 
 
-def add_exact_lag_feature(
-    df,
-    days,
-    source_col,
-    new_col
-):
+def load_context_data():
+    """
+    Load the complete processed daily demand series.
+
+    Real observations and imputed historical dates are both kept here
+    because this dataset is used only for lag/rolling feature context.
+
+    Imputed dates are NOT used as historical evaluation targets.
+    """
+
     logger.info(
-        f"Creating exact {days}-day lag feature: {new_col}"
+        "Loading complete processed demand context"
     )
 
-    lag_df = df[
-        ["Date", source_col]
+    context = pd.read_csv(
+        CONTEXT_PATH
+    )
+
+    context["Date"] = pd.to_datetime(
+        context["Date"]
+    )
+
+    context = (
+        context.groupby(
+            "Date",
+            as_index=False,
+        )
+        .agg(
+            total_demand=(
+                "Demand (MW)",
+                "sum",
+            ),
+            total_load_shed=(
+                "Load shed (MW)",
+                "sum",
+            ),
+            imputed_rows=(
+                "is_imputed",
+                "sum",
+            ),
+        )
+        .sort_values("Date")
+        .reset_index(drop=True)
+    )
+
+    logger.info(
+        f"Context rows loaded: {len(context)}"
+    )
+
+    logger.info(
+        "Context date range: "
+        f"{context['Date'].min().date()} "
+        "to "
+        f"{context['Date'].max().date()}"
+    )
+
+    logger.info(
+        "Fully imputed context days: "
+        f"{(context['imputed_rows'] == 9).sum()}"
+    )
+
+    return context
+
+
+def add_exact_lag_feature(
+    df,
+    context,
+    days,
+    source_col,
+    new_col,
+):
+    """
+    Create exact calendar-day lag feature using the complete
+    processed context dataset.
+    """
+
+    logger.info(
+        f"Creating exact {days}-day lag feature: "
+        f"{new_col}"
+    )
+
+    lag_df = context[
+        [
+            "Date",
+            source_col,
+        ]
     ].copy()
 
     lag_df["Date"] = (
@@ -39,7 +114,7 @@ def add_exact_lag_feature(
     return df.merge(
         lag_df,
         on="Date",
-        how="left"
+        how="left",
     )
 
 
@@ -66,13 +141,14 @@ def load_weather_data():
     )
 
     logger.info(
-        f"Weather rows loaded: {len(weather)}"
+        f"Weather rows loaded: "
+        f"{len(weather)}"
     )
 
     logger.info(
-        f"Weather date range: "
+        "Weather date range: "
         f"{weather['Date'].min().date()} "
-        f"to "
+        "to "
         f"{weather['Date'].max().date()}"
     )
 
@@ -99,8 +175,21 @@ def build_features():
     )
 
     logger.info(
-        f"Initial rows: {len(df)}"
+        f"Initial target rows: {len(df)}"
     )
+
+    logger.info(
+        "Target date range: "
+        f"{df['Date'].min().date()} "
+        "to "
+        f"{df['Date'].max().date()}"
+    )
+
+    # --------------------------------------------------
+    # Complete historical context
+    # --------------------------------------------------
+
+    context = load_context_data()
 
     # --------------------------------------------------
     # Forecast Date
@@ -146,6 +235,7 @@ def build_features():
     # Bangladesh weekend:
     # Friday = 4
     # Saturday = 5
+
     df["is_weekend"] = (
         df["day_of_week"]
         .isin([4, 5])
@@ -176,8 +266,8 @@ def build_features():
         "BD",
         years=range(
             start_year,
-            end_year + 1
-        )
+            end_year + 1,
+        ),
     )
 
     holiday_dates = set(
@@ -192,7 +282,7 @@ def build_features():
     )
 
     logger.info(
-        f"Holiday rows identified: "
+        "Holiday rows identified: "
         f"{df['is_holiday'].sum()}"
     )
 
@@ -217,9 +307,8 @@ def build_features():
     # --------------------------------------------------
     # Weather Features
     #
-    # IMPORTANT:
-    # We use weather observed on the current Date,
-    # not actual weather from the future target day.
+    # Current-day observed weather is used.
+    # Future target-day actual weather is not used.
     # --------------------------------------------------
 
     logger.info(
@@ -244,7 +333,7 @@ def build_features():
     df = df.merge(
         weather,
         on="Date",
-        how="left"
+        how="left",
     )
 
     weather_missing = (
@@ -263,58 +352,71 @@ def build_features():
     )
 
     logger.info(
-        f"Missing weather values after merge: "
+        "Missing weather values after merge: "
         f"{weather_missing}"
     )
 
     # --------------------------------------------------
     # Exact Demand Lag Features
+    #
+    # IMPORTANT:
+    # Lags are generated from complete processed context,
+    # not from the sparse real-target dataset.
     # --------------------------------------------------
 
     df = add_exact_lag_feature(
-        df,
+        df=df,
+        context=context,
         days=1,
         source_col="total_demand",
-        new_col="lag_1_day"
+        new_col="lag_1_day",
     )
 
     df = add_exact_lag_feature(
-        df,
+        df=df,
+        context=context,
         days=7,
         source_col="total_demand",
-        new_col="lag_7_day"
+        new_col="lag_7_day",
     )
 
     df = add_exact_lag_feature(
-        df,
+        df=df,
+        context=context,
         days=14,
         source_col="total_demand",
-        new_col="lag_14_day"
+        new_col="lag_14_day",
     )
 
     df = add_exact_lag_feature(
-        df,
+        df=df,
+        context=context,
         days=1,
         source_col="total_load_shed",
-        new_col="load_shed_lag_1_day"
+        new_col="load_shed_lag_1_day",
     )
 
     # --------------------------------------------------
     # Rolling Demand Features
+    #
+    # Rolling windows are generated from complete
+    # processed calendar-day context.
     # --------------------------------------------------
 
     logger.info(
-        "Creating exact calendar-based rolling features"
+        "Creating calendar-based rolling features "
+        "from complete processed context"
     )
 
     demand_series = (
-        df[
+        context[
             [
                 "Date",
-                "total_demand"
+                "total_demand",
             ]
         ]
         .set_index("Date")
+        .sort_index()
         .asfreq("D")
     )
 
@@ -327,7 +429,7 @@ def build_features():
         .shift(1)
         .rolling(
             window=7,
-            min_periods=7
+            min_periods=7,
         )
         .mean()
     )
@@ -341,7 +443,7 @@ def build_features():
         .shift(1)
         .rolling(
             window=14,
-            min_periods=14
+            min_periods=14,
         )
         .mean()
     )
@@ -355,7 +457,7 @@ def build_features():
         .shift(1)
         .rolling(
             window=30,
-            min_periods=30
+            min_periods=30,
         )
         .mean()
     )
@@ -374,7 +476,7 @@ def build_features():
     df = df.merge(
         rolling_features,
         on="Date",
-        how="left"
+        how="left",
     )
 
     # --------------------------------------------------
@@ -420,7 +522,7 @@ def build_features():
     )
 
     logger.info(
-        f"Rows removed because of unavailable "
+        "Rows removed because of unavailable "
         f"features: {removed}"
     )
 
@@ -441,18 +543,25 @@ def build_features():
             "Feature dataset is empty"
         )
 
-    if df[
-        feature_columns
-    ].isna().any().any():
-
+    if (
+        df[
+            feature_columns
+        ]
+        .isna()
+        .any()
+        .any()
+    ):
         raise ValueError(
             "Missing values remain in model features"
         )
 
-    if df[
-        "next_day_total_demand"
-    ].isna().any():
-
+    if (
+        df[
+            "next_day_total_demand"
+        ]
+        .isna()
+        .any()
+    ):
         raise ValueError(
             "Target contains missing values"
         )
@@ -473,31 +582,37 @@ def build_features():
     # Save
     # --------------------------------------------------
 
+    df = (
+        df
+        .sort_values("Date")
+        .reset_index(drop=True)
+    )
+
     logger.info(
         "Saving feature dataset"
     )
 
     df.to_csv(
         OUTPUT_PATH,
-        index=False
+        index=False,
     )
 
     logger.info(
-        f"Feature dataset saved to: "
+        "Feature dataset saved to: "
         f"{OUTPUT_PATH}"
     )
 
     logger.info(
-        f"Date range: "
+        "Date range: "
         f"{df['Date'].min().date()} "
-        f"to "
+        "to "
         f"{df['Date'].max().date()}"
     )
 
     logger.info(
-        f"Forecast date range: "
+        "Forecast date range: "
         f"{df['forecast_date'].min().date()} "
-        f"to "
+        "to "
         f"{df['forecast_date'].max().date()}"
     )
 

@@ -1,14 +1,13 @@
 import os
+import time
 from datetime import date, datetime
 from textwrap import dedent
-
 import pandas as pd
 import plotly.graph_objects as go
 import requests
 import streamlit as st
 
-
-# ============================================================
+#============================================================
 # Page Configuration
 # ============================================================
 
@@ -27,6 +26,11 @@ API_BASE_URL = os.getenv(
 
 REQUEST_TIMEOUT = 30
 
+# Render Free instances may sleep after inactivity.
+# The dashboard automatically wakes and retries the backend.
+BACKEND_HEALTH_TIMEOUT = 8
+BACKEND_MAX_RETRIES = 8
+BACKEND_RETRY_INTERVAL = 5
 
 # ============================================================
 # Helper Functions
@@ -38,9 +42,7 @@ def render_html(content):
         for line in dedent(content).splitlines()
         if line.strip()
     )
-
     st.html(cleaned_html)
-
 
 def api_get(endpoint, params=None):
     try:
@@ -52,18 +54,15 @@ def api_get(endpoint, params=None):
 
         if response.status_code == 200:
             return response.json(), None
-
         try:
             detail = response.json().get(
                 "detail",
                 "Unknown API error",
             )
-
         except Exception:
             detail = response.text
-
         return None, detail
-
+    
     except requests.exceptions.ConnectionError:
         return None, (
             "Could not connect to the FastAPI backend. "
@@ -76,31 +75,103 @@ def api_get(endpoint, params=None):
     except Exception as error:
         return None, str(error)
 
+def check_backend_health():
+    """Perform a lightweight backend health check."""
+    try:
+        response = requests.get(
+            f"{API_BASE_URL}/health",
+            timeout=BACKEND_HEALTH_TIMEOUT,
+        )
+
+        if response.status_code != 200:
+            return None, (
+                f"Health check returned HTTP "
+                f"{response.status_code}."
+            )
+        data = response.json()
+
+        if data.get("status") == "healthy":
+            return data, None
+
+        return data, "Backend did not report a healthy status."
+
+    except requests.exceptions.Timeout:
+        return None, "Backend health check timed out."
+
+    except requests.exceptions.ConnectionError:
+        return None, "Could not connect to the backend."
+
+    except Exception as error:
+        return None, str(error)
+
+def wait_for_backend():
+    """Wake a sleeping backend and wait for it to become healthy."""
+    status_placeholder = st.empty()
+    progress_placeholder = st.empty()
+    last_error = None
+
+    for attempt in range(1, BACKEND_MAX_RETRIES + 1):
+        health_data, health_error = check_backend_health()
+
+        if (
+            health_data
+            and health_data.get("status") == "healthy"
+        ):
+            progress_placeholder.empty()
+
+            if attempt > 1:
+                status_placeholder.success(
+                    "Backend is ready. Loading dashboard..."
+                )
+                time.sleep(0.8)
+
+            status_placeholder.empty()
+            return health_data, None
+
+        last_error = health_error
+
+        if attempt < BACKEND_MAX_RETRIES:
+            status_placeholder.info(
+                "Backend is waking up. "
+                "This can take up to about a minute on the "
+                "free cloud instance. The dashboard will "
+                "reconnect automatically."
+            )
+
+            progress_placeholder.progress(
+                attempt / BACKEND_MAX_RETRIES,
+                text=(
+                    f"Connection attempt "
+                    f"{attempt}/{BACKEND_MAX_RETRIES}"
+                ),
+            )
+
+            time.sleep(BACKEND_RETRY_INTERVAL)
+
+    progress_placeholder.empty()
+
+    status_placeholder.error(
+        "The backend could not be reached after several attempts."
+    )
+    return None, last_error
 
 def format_number(value, decimals=2):
     if value is None:
         return "N/A"
-
     try:
         return f"{float(value):,.{decimals}f}"
-
     except Exception:
         return str(value)
-
 
 def format_mw(value):
     if value is None:
         return "N/A"
-
     return f"{format_number(value)} MW"
-
 
 def format_pct(value):
     if value is None:
         return "N/A"
-
     return f"{format_number(value)}%"
-
 
 def scope_description(scope):
     if scope == "holdout":
@@ -108,16 +179,14 @@ def scope_description(scope):
             "This date belongs to the 2026 holdout period "
             "and was not used to train the final model."
         )
-
+    
     if scope == "retrospective_training_period":
         return (
             "This date is inside the final model's training "
             "period. The result is a retrospective model "
             "estimate, not an unseen historical forecast."
         )
-
     return ""
-
 
 # ============================================================
 # Styling
@@ -126,7 +195,6 @@ def scope_description(scope):
 st.markdown(
     """
     <style>
-
     .stApp {
         background:
             radial-gradient(
@@ -217,20 +285,16 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-
 # ============================================================
 # Backend Health
 # ============================================================
 
-health_data, health_error = api_get(
-    "/health"
-)
+health_data, health_error = wait_for_backend()
 
 api_online = bool(
     health_data
     and health_data.get("status") == "healthy"
 )
-
 
 # ============================================================
 # Sidebar
@@ -238,33 +302,27 @@ api_online = bool(
 
 with st.sidebar:
     st.markdown("## ⚡ BD Power Forecast")
-
     st.caption(
         "National and regional electricity demand forecasting."
     )
-
     st.divider()
 
     if api_online:
         st.success(
             "FastAPI backend connected"
         )
-
     else:
         st.error(
             "FastAPI backend offline"
         )
-
     regions_data, regions_error = api_get(
         "/regions"
     )
-
     if regions_data:
         region_options = [
             item["region"]
             for item in regions_data["regions"]
         ]
-
     else:
         region_options = [
             "National",
@@ -284,7 +342,6 @@ with st.sidebar:
         region_options,
         index=0,
     )
-
     st.divider()
 
     history_days = st.slider(
@@ -294,16 +351,12 @@ with st.sidebar:
         value=120,
         step=30,
     )
-
     st.divider()
-
     st.caption("Backend")
-
     st.code(
         API_BASE_URL,
         language=None,
     )
-
 
 # ============================================================
 # Header
@@ -324,19 +377,27 @@ render_html(
     """
 )
 
-
 if not api_online:
     st.error(
-        "FastAPI backend is not available."
+        "The forecasting API is temporarily unavailable."
     )
-
-    st.code(
-        "uvicorn src.api.app:app --reload",
-        language="powershell",
+    st.caption(
+        "The dashboard already tried to wake the backend "
+        "automatically. Please retry the connection."
     )
-
+    if st.button(
+        "Retry Backend Connection",
+        type="primary",
+        use_container_width=True,
+    ):
+        st.rerun()
+    if health_error:
+        with st.expander("Connection details"):
+            st.code(
+                str(health_error),
+                language=None,
+            )
     st.stop()
-
 
 # ============================================================
 # Latest Anchor Forecast
@@ -349,19 +410,15 @@ latest_data, latest_error = api_get(
     },
 )
 
-
 if latest_data is None:
     st.error(
         f"Could not load latest prediction: {latest_error}"
     )
-
     st.stop()
-
 
 st.subheader(
     f"{selected_region} Forecast Overview"
 )
-
 
 latest_change = float(
     latest_data.get(
@@ -379,16 +436,15 @@ latest_change_percent = float(
     or 0
 )
 
+
+
 latest_direction_symbol = (
     "+"
     if latest_change >= 0
     else "-"
 )
 
-
 c1, c2, c3, c4 = st.columns(4)
-
-
 c1.metric(
     "Anchored Forecast",
     format_mw(
@@ -396,12 +452,12 @@ c1.metric(
             "predicted_demand_mw"
         )
     ),
+
     help=(
         "Direct next-day forecast based on "
         "the latest real BPDB observation."
     ),
 )
-
 
 c2.metric(
     "Latest Real Demand",
@@ -410,6 +466,7 @@ c2.metric(
             "current_demand_mw"
         )
     ),
+
     help=(
         "Latest real BPDB observation: "
         + str(
@@ -421,7 +478,6 @@ c2.metric(
     ),
 )
 
-
 c3.metric(
     "Expected Change",
     (
@@ -430,18 +486,19 @@ c3.metric(
             abs(latest_change)
         )
     ),
+
     delta=(
         latest_direction_symbol
         + format_pct(
             abs(latest_change_percent)
         )
     ),
+
     help=(
         "Expected change relative to "
         "the latest real demand."
     ),
 )
-
 
 c4.metric(
     "Anchor Forecast Date",
@@ -450,7 +507,6 @@ c4.metric(
         "N/A",
     ),
 )
-
 
 st.info(
     "Latest real BPDB observation: "
@@ -469,8 +525,6 @@ st.info(
     )
     + " · Future actual demand is not available yet."
 )
-
-
 # ============================================================
 # Latest Forecast Details
 # ============================================================
@@ -479,11 +533,9 @@ st.markdown(
     "### Latest Anchored Forecast"
 )
 
-
 left, right = st.columns(
     [1.35, 1]
 )
-
 
 with left:
     change = float(
@@ -538,7 +590,6 @@ with left:
 
     card_html = f"""
     <div class="section-card">
-
         <div
             style="
                 display:flex;
@@ -549,7 +600,6 @@ with left:
             "
         >
             <div>
-
                 <div
                     style="
                         color:#94a3b8;
@@ -558,7 +608,6 @@ with left:
                 >
                     Forecast Date
                 </div>
-
                 <div
                     style="
                         color:#f8fafc;
@@ -568,15 +617,11 @@ with left:
                 >
                     {forecast_date_text}
                 </div>
-
             </div>
-
             <span class="status-info">
                 {selected_region}
             </span>
-
         </div>
-
         <div
             style="
                 color:#cbd5e1;
@@ -610,12 +655,10 @@ with left:
                 ({change_percent_text})
             </b>
         </div>
-
     </div>
+
     """
-
     render_html(card_html)
-
 
 with right:
     model_info = latest_data.get(
@@ -643,10 +686,8 @@ with right:
         model_info.get("alias")
         or "N/A"
     )
-
     model_card_html = f"""
     <div class="section-card">
-
         <div
             style="
                 font-size:17px;
@@ -657,11 +698,9 @@ with right:
         >
             Anchor Strategy
         </div>
-
         <span class="{badge_class}">
             {strategy.upper()}
         </span>
-
         <div
             style="
                 margin-top:16px;
@@ -682,14 +721,12 @@ with right:
         >
             Alias: {alias_name}
         </div>
-
     </div>
-    """
 
+    """
     render_html(
         model_card_html
     )
-
 
 # ============================================================
 # Extended Forecast
@@ -707,7 +744,6 @@ st.caption(
     "Bridge Forecasts."
 )
 
-
 extended_data, extended_error = api_get(
     "/predict/extended",
     params={
@@ -721,12 +757,10 @@ if extended_data:
         "forecasts",
         [],
     )
-
     if forecasts:
         extended_df = pd.DataFrame(
             forecasts
         )
-
         extended_df[
             "forecast_date"
         ] = pd.to_datetime(
@@ -734,7 +768,6 @@ if extended_data:
                 "forecast_date"
             ]
         )
-
         anchor_df = extended_df[
             extended_df[
                 "forecast_mode"
@@ -748,7 +781,6 @@ if extended_data:
             ]
             == "bridge"
         ].copy()
-
 
         latest_real_date = (
             extended_data.get(
@@ -771,7 +803,6 @@ if extended_data:
             )
         )
 
-
         if not anchor_df.empty:
             anchor_prediction = (
                 anchor_df[
@@ -779,68 +810,49 @@ if extended_data:
                 ]
                 .iloc[0]
             )
-
         else:
             anchor_prediction = None
-
-
         e1, e2, e3, e4 = st.columns(
             4
         )
-
 
         e1.metric(
             "Latest Real BPDB Date",
             latest_real_date,
         )
-
-
         e2.metric(
             "Day+1 Anchor",
             format_mw(
                 anchor_prediction
             ),
         )
-
-
         e3.metric(
             "Forecast Coverage",
             forecast_end,
         )
-
-
         e4.metric(
             "Validated Horizon",
             f"{validated_horizon} Days",
         )
-
-
         # ====================================================
         # Extended Forecast Chart
         # ====================================================
 
         fig_extended = go.Figure()
-
-
         if not anchor_df.empty:
             fig_extended.add_trace(
                 go.Scatter(
                     x=anchor_df[
                         "forecast_date"
                     ],
-
                     y=anchor_df[
                         "predicted_demand_mw"
                     ],
-
                     mode="markers",
-
                     name="Anchored Forecast",
-
                     marker=dict(
                         size=12,
                     ),
-
                     hovertemplate=(
                         "%{x|%d %b %Y}"
                         "<br>"
@@ -850,7 +862,6 @@ if extended_data:
                     ),
                 )
             )
-
 
         if not bridge_df.empty:
             bridge_plot_df = pd.concat(
@@ -866,26 +877,20 @@ if extended_data:
                     x=bridge_plot_df[
                         "forecast_date"
                     ],
-
                     y=bridge_plot_df[
                         "predicted_demand_mw"
                     ],
-
                     mode="lines+markers",
-
                     name=(
                         "Extended Bridge Forecast"
                     ),
-
                     line=dict(
                         width=2.4,
                         dash="dash",
                     ),
-
                     marker=dict(
                         size=7,
                     ),
-
                     hovertemplate=(
                         "%{x|%d %b %Y}"
                         "<br>"
@@ -896,27 +901,21 @@ if extended_data:
                 )
             )
 
-
         fig_extended.update_layout(
             height=440,
-
             margin=dict(
                 l=20,
                 r=20,
                 t=35,
                 b=20,
             ),
-
             paper_bgcolor=(
                 "rgba(0,0,0,0)"
             ),
-
             plot_bgcolor=(
                 "rgba(0,0,0,0)"
             ),
-
             hovermode="x unified",
-
             legend=dict(
                 orientation="h",
                 yanchor="bottom",
@@ -924,32 +923,25 @@ if extended_data:
                 xanchor="left",
                 x=0,
             ),
-
             xaxis_title=(
                 "Forecast Date"
             ),
-
             yaxis_title=(
                 "Demand (MW)"
             ),
         )
-
 
         st.plotly_chart(
             fig_extended,
             use_container_width=True,
         )
 
-
         # ====================================================
         # Extended Forecast Table
         # ====================================================
-
         st.markdown(
             "#### Forecast Details"
         )
-
-
         table_df = extended_df[
             [
                 "forecast_date",
@@ -960,8 +952,6 @@ if extended_data:
                 "model_name",
             ]
         ].copy()
-
-
         table_df[
             "forecast_date"
         ] = table_df[
@@ -969,8 +959,6 @@ if extended_data:
         ].dt.strftime(
             "%Y-%m-%d"
         )
-
-
         table_df[
             "horizon_day"
         ] = table_df[
@@ -978,8 +966,6 @@ if extended_data:
         ].apply(
             lambda x: f"Day +{x}"
         )
-
-
         table_df[
             "predicted_demand_mw"
         ] = table_df[
@@ -989,37 +975,28 @@ if extended_data:
                 f"{float(x):,.2f}"
             )
         )
-
-
         table_df = table_df.rename(
             columns={
                 "forecast_date":
                     "Forecast Date",
-
                 "horizon_day":
                     "Horizon",
-
                 "display_label":
                     "Forecast Type",
-
                 "predicted_demand_mw":
                     "Demand (MW)",
-
                 "forecast_status":
                     "Status",
-
                 "model_name":
                     "Model",
             }
         )
-
 
         st.dataframe(
             table_df,
             use_container_width=True,
             hide_index=True,
         )
-
 
         st.warning(
             "Extended Bridge Forecasts are recursive estimates. "
@@ -1029,13 +1006,11 @@ if extended_data:
             "increase as the horizon becomes longer."
         )
 
-
         st.caption(
             "When new real BPDB demand data becomes available, "
             "the forecast can be re-anchored from the latest "
             "real observation."
         )
-
 
     else:
         st.warning(
@@ -1048,15 +1023,14 @@ else:
         + str(extended_error)
     )
 
-
 # ============================================================
 # Specific Historical Date
 # ============================================================
 
 st.divider()
-
 st.subheader(
     "Explore a Specific Forecast Date"
+
 )
 
 st.caption(
@@ -1065,14 +1039,12 @@ st.caption(
     "the recorded electricity demand."
 )
 
-
 latest_forecast_date = datetime.strptime(
     latest_data[
         "forecast_date"
     ],
     "%Y-%m-%d",
 ).date()
-
 
 default_date = min(
     date(
@@ -1083,7 +1055,6 @@ default_date = min(
     latest_forecast_date,
 )
 
-
 selected_date = st.date_input(
     "Forecast date",
     value=default_date,
@@ -1092,21 +1063,21 @@ selected_date = st.date_input(
         2,
         1,
     ),
+
     max_value=latest_forecast_date,
 )
-
 
 if st.button(
     "Generate Date-Specific Prediction",
     type="primary",
     use_container_width=True,
+
 ):
     specific_data, specific_error = api_get(
         "/predict/date",
         params={
             "forecast_date":
                 selected_date.isoformat(),
-
             "region":
                 selected_region,
         },
@@ -1116,82 +1087,64 @@ if st.button(
         st.markdown(
             f"### {selected_region} — {selected_date}"
         )
-
-
         predicted_text = format_mw(
             specific_data.get(
                 "predicted_demand_mw"
             )
         )
-
         actual_text = format_mw(
             specific_data.get(
                 "actual_demand_mw"
             )
         )
-
         absolute_error_text = format_mw(
             specific_data.get(
                 "absolute_error_mw"
             )
         )
-
         percentage_error_text = format_pct(
             specific_data.get(
                 "percentage_error"
             )
         )
-
-
         p1, p2, p3, p4 = st.columns(
             4
         )
-
-
         p1.metric(
             "Predicted Demand",
             predicted_text,
         )
-
         p2.metric(
             "Actual Demand",
             actual_text,
         )
-
         p3.metric(
             "Absolute Error",
             absolute_error_text,
-        )
 
+        )
         p4.metric(
             "Percentage Error",
             percentage_error_text,
         )
-
-
         scope = specific_data.get(
             "evaluation_scope",
             "",
         )
-
-
         if scope == "holdout":
             st.success(
                 "Evaluation scope: Holdout Evaluation — "
                 + scope_description(scope)
             )
-
         else:
             st.warning(
                 "Evaluation scope: Retrospective Estimate — "
                 + scope_description(scope)
             )
 
-
         st.markdown(
             "#### Forecast Context"
         )
-
 
         context_df = pd.DataFrame(
             {
@@ -1203,7 +1156,6 @@ if st.button(
                     "Actual Demand",
                     "Forecast Error",
                 ],
-
                 "Value": [
                     specific_data.get(
                         "observation_date",
@@ -1220,11 +1172,8 @@ if st.button(
                             "current_demand_mw"
                         )
                     ),
-
                     predicted_text,
-
                     actual_text,
-
                     format_mw(
                         specific_data.get(
                             "forecast_error_mw"
@@ -1234,13 +1183,11 @@ if st.button(
             }
         )
 
-
         st.dataframe(
             context_df,
             use_container_width=True,
             hide_index=True,
         )
-
 
     else:
         if isinstance(
@@ -1277,13 +1224,11 @@ if st.button(
                 str(specific_error)
             )
 
-
 # ============================================================
 # Historical Chart
 # ============================================================
 
 st.divider()
-
 st.subheader(
     "Actual vs Model Estimate"
 )
@@ -1295,18 +1240,15 @@ st.caption(
     "final-model estimates."
 )
 
-
 history_data, history_error = api_get(
     "/history",
     params={
         "region":
             selected_region,
-
         "limit":
             history_days,
     },
 )
-
 
 if history_data:
     history_df = pd.DataFrame(
@@ -1320,38 +1262,28 @@ if history_data:
         st.warning(
             "No historical records returned by the API."
         )
-
     else:
         history_df["date"] = pd.to_datetime(
             history_df["date"]
         )
-
         history_df = history_df.sort_values(
             "date"
         )
 
-
         fig = go.Figure()
-
-
         fig.add_trace(
             go.Scatter(
                 x=history_df[
                     "date"
                 ],
-
                 y=history_df[
                     "actual_demand_mw"
                 ],
-
                 mode="lines",
-
                 name="Actual Demand",
-
                 line=dict(
                     width=2.2
                 ),
-
                 hovertemplate=(
                     "%{x|%d %b %Y}"
                     "<br>"
@@ -1362,25 +1294,19 @@ if history_data:
             )
         )
 
-
         fig.add_trace(
             go.Scatter(
                 x=history_df[
                     "date"
                 ],
-
                 y=history_df[
                     "predicted_demand_mw"
                 ],
-
                 mode="lines",
-
                 name="Model Estimate",
-
                 line=dict(
                     width=2.2
                 ),
-
                 hovertemplate=(
                     "%{x|%d %b %Y}"
                     "<br>"
@@ -1390,28 +1316,21 @@ if history_data:
                 ),
             )
         )
-
-
         fig.update_layout(
             height=460,
-
             margin=dict(
                 l=20,
                 r=20,
                 t=35,
                 b=20,
             ),
-
             paper_bgcolor=(
                 "rgba(0,0,0,0)"
             ),
-
             plot_bgcolor=(
                 "rgba(0,0,0,0)"
             ),
-
             hovermode="x unified",
-
             legend=dict(
                 orientation="h",
                 yanchor="bottom",
@@ -1419,22 +1338,17 @@ if history_data:
                 xanchor="left",
                 x=0,
             ),
-
             xaxis_title=(
                 "Forecast Date"
             ),
-
             yaxis_title=(
                 "Demand (MW)"
             ),
         )
-
-
         st.plotly_chart(
             fig,
             use_container_width=True,
         )
-
 
         avg_mae = history_df[
             "absolute_error_mw"
@@ -1448,23 +1362,19 @@ if history_data:
             "absolute_error_mw"
         ].max()
 
-
         h1, h2, h3 = st.columns(
             3
         )
-
 
         h1.metric(
             "Window Mean Absolute Error",
             format_mw(avg_mae),
         )
 
-
         h2.metric(
             "Window Mean Percentage Error",
             format_pct(avg_mape),
         )
-
 
         h3.metric(
             "Largest Absolute Error",
@@ -1478,18 +1388,14 @@ else:
         + str(history_error)
     )
 
-
 # ============================================================
 # Forecast Model Information
 # ============================================================
 
 st.divider()
-
 st.subheader(
     "Forecast Model Information"
 )
-
-
 model_data, model_error = api_get(
     "/model/info",
     params={
@@ -1498,23 +1404,18 @@ model_data, model_error = api_get(
     },
 )
 
-
 if model_data:
     anchor_info = model_data.get(
         "anchor",
         {},
     )
-
     bridge_info = model_data.get(
         "bridge",
         {},
     )
-
-
     model_col1, model_col2 = st.columns(
         2
     )
-
 
     with model_col1:
         anchor_strategy = (
@@ -1523,7 +1424,6 @@ if model_data:
                 "N/A",
             )
         )
-
         anchor_model_name = (
             anchor_info.get(
                 "model_name"
@@ -1543,11 +1443,8 @@ if model_data:
             if anchor_strategy == "ridge"
             else "status-warning"
         )
-
-
         anchor_html = f"""
         <div class="section-card">
-
             <div
                 style="
                     color:#94a3b8;
@@ -1557,11 +1454,9 @@ if model_data:
             >
                 DAY +1 ANCHOR MODEL
             </div>
-
             <span class="{anchor_badge}">
                 {anchor_strategy.upper()}
             </span>
-
             <div
                 style="
                     color:#f8fafc;
@@ -1573,7 +1468,6 @@ if model_data:
             >
                 {anchor_model_name}
             </div>
-
             <div
                 style="
                     color:#94a3b8;
@@ -1583,8 +1477,8 @@ if model_data:
             >
                 Alias: {anchor_alias}
             </div>
-
         </div>
+
         """
 
         render_html(
@@ -1593,6 +1487,7 @@ if model_data:
 
 
     with model_col2:
+
         bridge_enabled = bridge_info.get(
             "enabled",
             False,
@@ -1609,7 +1504,6 @@ if model_data:
             )
             or "N/A"
         )
-
         bridge_horizon = bridge_info.get(
             "validated_max_horizon_days",
             "N/A",
@@ -1621,10 +1515,8 @@ if model_data:
             else "DISABLED"
         )
 
-
         bridge_html = f"""
         <div class="section-card">
-
             <div
                 style="
                     color:#94a3b8;
@@ -1634,11 +1526,9 @@ if model_data:
             >
                 DAY +2 TO DAY +8 BRIDGE MODEL
             </div>
-
             <span class="status-info">
                 {enabled_text}
             </span>
-
             <div
                 style="
                     color:#f8fafc;
@@ -1650,7 +1540,6 @@ if model_data:
             >
                 {bridge_model_name}
             </div>
-
             <div
                 style="
                     color:#94a3b8;
@@ -1662,14 +1551,12 @@ if model_data:
                 · Validated horizon:
                 {bridge_horizon} days
             </div>
-
         </div>
-        """
 
+        """
         render_html(
             bridge_html
         )
-
 
     if selected_region == "National":
         national_cv_mape = (
@@ -1677,7 +1564,6 @@ if model_data:
                 "cv_mean_mape"
             )
         )
-
         national_holdout_mape = (
             anchor_info.get(
                 "holdout_mape"
@@ -1689,12 +1575,9 @@ if model_data:
                 "backtest_mape"
             )
         )
-
-
         m1, m2, m3 = st.columns(
             3
         )
-
 
         m1.metric(
             "Anchor CV MAPE",
@@ -1703,15 +1586,12 @@ if model_data:
             ),
         )
 
-
         m2.metric(
             "2026 Holdout MAPE",
             format_pct(
                 national_holdout_mape
             ),
         )
-
-
         m3.metric(
             "Bridge Backtest MAPE",
             format_pct(
@@ -1719,20 +1599,17 @@ if model_data:
             ),
         )
 
-
 else:
     st.warning(
         "Model information unavailable: "
         + str(model_error)
     )
 
-
 # ============================================================
 # Data Availability Note
 # ============================================================
 
 st.divider()
-
 st.info(
     "Data availability note: forecasts are anchored "
     "to the latest real BPDB observation. If BPDB has "
@@ -1741,12 +1618,9 @@ st.info(
     "the validated 8-day horizon. Imputed demand values "
     "are not treated as real live observations."
 )
-
-
 # ============================================================
 # Footer
 # ============================================================
-
 render_html(
     """
     <div class="footer-text">
