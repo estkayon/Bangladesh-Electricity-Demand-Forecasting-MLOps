@@ -8,7 +8,10 @@ on:
     # 7:17 PM BD = 13:17 UTC
     
      - cron: "17 3 * * *"
+       timezone: "Asia/Dhaka"
+       
      - cron: "17 13 * * *"
+       timezone: "Asia/Dhaka"
 
 permissions:
   contents: write

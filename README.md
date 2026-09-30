@@ -460,7 +460,8 @@ A separate GitHub Actions workflow refreshes production data and forecasts autom
 Current schedule:
 
 ```text
-09:00 AM Bangladesh Time
+09:17 AM Bangladesh Time
+07:17 PM Bangladesh Time
 ```
 
 Workflow:
