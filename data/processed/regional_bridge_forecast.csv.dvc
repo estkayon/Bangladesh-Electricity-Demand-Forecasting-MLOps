@@ -1,5 +1,5 @@
 outs:
-- md5: 75737edc6a9f863da689b82209480999
-  size: 10641
+- md5: d12a79a0fbe390183ffc1f45d0282698
+  size: 10640
   hash: md5
   path: regional_bridge_forecast.csv
