@@ -208,8 +208,14 @@ def load_processed_data():
         }
     )
 
+    MIN_REAL_DEMAND_MW = 50.0
+
     df["is_real"] = (
-        df["is_imputed"] == 0
+        (df["is_imputed"] == 0)
+        & (
+            df["regional_demand_mw"]
+            >= MIN_REAL_DEMAND_MW
+        )
     ).astype(int)
 
     return (
