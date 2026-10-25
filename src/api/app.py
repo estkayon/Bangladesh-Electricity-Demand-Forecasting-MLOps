@@ -56,6 +56,7 @@ NATIONAL_BRIDGE_MODEL_NAME = (
 MODEL_ALIAS = "champion"
 
 MAX_BRIDGE_HORIZON = 8
+MIN_REAL_DEMAND_MW = 50.0
 
 
 REGIONS = [
@@ -1327,8 +1328,29 @@ def predict_latest(
                 ),
             )
 
+        if region == "National":
+            real_df = df[
+                df["total_demand"]
+                >= MIN_REAL_DEMAND_MW
+            ]
+        else:
+            real_df = df[
+                df["regional_demand_mw"]
+                >= MIN_REAL_DEMAND_MW
+            ]
+
+        if real_df.empty:
+            raise HTTPException(
+                status_code=404,
+                detail=(
+                    "No real demand data "
+                    "available (all values "
+                    "below threshold)"
+                ),
+            )
+
         latest_row = (
-            df.iloc[-1]
+            real_df.iloc[-1]
         )
 
         return (
@@ -1350,7 +1372,6 @@ def predict_latest(
             status_code=500,
             detail=str(error),
         )
-
 
 # ============================================================
 # Extended Forecast
