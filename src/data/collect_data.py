@@ -33,6 +33,13 @@ TIMEZONE = "Asia/Dhaka"
 
 REQUEST_TIMEOUT = 30
 
+# Minimum plausible national demand (MW).
+# Bangladesh national demand never drops
+# below this. Any date where every zone
+# reports 0 or below this per-zone floor
+# is BPDB placeholder data, not real.
+MIN_ZONE_DEMAND_MW = 50.0
+
 
 REGIONS = [
     "Dhaka",
@@ -444,6 +451,24 @@ def fetch_date(
             logger.warning(
                 f"No valid demand table: "
                 f"{date_text}"
+            )
+
+            return None
+
+        # Reject placeholder data where all
+        # zones report zero or near-zero demand.
+        # BPDB sometimes publishes tables with
+        # 0 MW for every zone before real data
+        # is available.
+        if (
+            parsed_df["Demand (MW)"]
+            < MIN_ZONE_DEMAND_MW
+        ).all():
+            logger.warning(
+                f"Placeholder data detected "
+                f"(all zones below "
+                f"{MIN_ZONE_DEMAND_MW} MW): "
+                f"{date_text}, skipping"
             )
 
             return None
