@@ -213,8 +213,14 @@ def load_national_demand():
 def get_latest_real_date(
     national,
 ):
+    MIN_REAL_DEMAND_MW = 450.0
+
     real_rows = national[
-        national["is_real"] == 1
+        (national["is_real"] == 1)
+        & (
+            national["total_demand"]
+            >= MIN_REAL_DEMAND_MW
+        )
     ]
 
     if real_rows.empty:
@@ -235,6 +241,7 @@ def get_latest_real_date(
     )
 
     return latest_real_date
+
 
 
 # ============================================================
