@@ -39,4 +39,6 @@ RUN dvc config core.no_scm true
 
 EXPOSE 8000
 
-CMD ["sh", "-c", "dvc remote modify origin --local auth basic && dvc remote modify origin --local user \"$DAGSHUB_USERNAME\" && dvc remote modify origin --local password \"$DAGSHUB_TOKEN\" && echo '=== DVC PULL START ===' && dvc pull -r origin && echo '=== DVC PULL COMPLETE ===' && ls -lah data/processed/ && python -m uvicorn src.api.app:app --host 0.0.0.0 --port ${PORT:-8000}"]
+# CMD ["sh", "-c", "dvc remote modify origin --local auth basic && dvc remote modify origin --local user \"$DAGSHUB_USERNAME\" && dvc remote modify origin --local password \"$DAGSHUB_TOKEN\" && echo '=== DVC PULL START ===' && dvc pull -r origin && echo '=== DVC PULL COMPLETE ===' && ls -lah data/processed/ && python -m uvicorn src.api.app:app --host 0.0.0.0 --port ${PORT:-8000}"]
+
+CMD ["sh", "-c", "dvc remote modify origin --local auth basic && dvc remote modify origin --local user \"$DAGSHUB_USERNAME\" && dvc remote modify origin --local password \"$DAGSHUB_TOKEN\" && echo '=== DVC PULL START ===' && dvc pull -r origin && echo '=== DVC PULL COMPLETE ===' && python -m src.data.preprocess && python -m src.features.build_target && python -m src.features.build_features && python -m src.features.build_regional_target && python -m src.features.build_regional_features && python -m src.features.build_inference_features && python -m src.models.generate_bridge_forecast && echo '=== PIPELINE COMPLETE ===' && python -m uvicorn src.api.app:app --host 0.0.0.0 --port ${PORT:-8000}"]
